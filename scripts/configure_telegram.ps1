@@ -27,13 +27,15 @@ if (!(Test-Path $envFile)) {
 
 $token = $null
 try { $token = (Get-Clipboard -Raw) } catch {}
-$token = ($token ?? '').Trim()
+if ($null -eq $token) { $token = '' }
+$token = $token.Trim()
 
 if ([string]::IsNullOrWhiteSpace($token)) {
   Write-Host "Copy your TELEGRAM_BOT_TOKEN to clipboard, then press Enter."
   Read-Host | Out-Null
   try { $token = (Get-Clipboard -Raw) } catch { $token = '' }
-  $token = ($token ?? '').Trim()
+  if ($null -eq $token) { $token = '' }
+  $token = $token.Trim()
 }
 
 if ([string]::IsNullOrWhiteSpace($token)) {
@@ -54,7 +56,8 @@ $pin = ''
 Write-Host "Optional: copy TELEGRAM_PAIR_PIN to clipboard (or leave empty) then press Enter."
 Read-Host | Out-Null
 try { $pin = (Get-Clipboard -Raw) } catch { $pin = '' }
-$pin = ($pin ?? '').Trim()
+if ($null -eq $pin) { $pin = '' }
+$pin = $pin.Trim()
 if (-not [string]::IsNullOrWhiteSpace($pin)) {
   $pin = -join ($pin.ToCharArray() | Where-Object { $_ -match '[0-9A-Za-z@#%+=:_-]' })
 }
