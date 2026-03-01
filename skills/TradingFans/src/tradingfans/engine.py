@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import sys
+from pathlib import Path
 from collections import deque
 
 from .clob import ClobClient, check_depth
@@ -62,6 +63,40 @@ def _setup_logging() -> None:
 log = logging.getLogger("engine")
 
 # ── Config ────────────────────────────────────────────────────
+def _maybe_load_dotenv() -> None:
+    """
+    Load a nearby `.env` file (walking up a few parent dirs).
+    Only sets variables that are not already present in the process env.
+    """
+    if os.environ.get("TRADINGFANS_NO_DOTENV", "0") == "1":
+        return
+    try:
+        cwd = Path.cwd()
+        for p in [cwd, *list(cwd.parents)[:5]]:
+            env_path = p / ".env"
+            if not env_path.exists():
+                continue
+            for raw in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].strip()
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if not k or k in os.environ:
+                    continue
+                if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                    v = v[1:-1]
+                os.environ[k] = v
+            log.info("Loaded .env from %s", str(env_path))
+            break
+    except Exception:
+        pass
+
 MAX_SIZE_USDC  = float(os.environ.get("POLY_MAX_SIZE", "10"))
 POLL_INTERVAL  = float(os.environ.get("POLY_POLL_INTERVAL", "5"))
 SYMBOL_FILTER  = os.environ.get("POLY_SYMBOL", "both").upper()
@@ -408,6 +443,7 @@ async def trading_loop(
 
 async def main() -> None:
     _setup_logging()
+    _maybe_load_dotenv()
 
     parser = argparse.ArgumentParser(description="TradingFans — Polymarket 5m crypto agent")
     parser.add_argument("--dry-run", action="store_true")
