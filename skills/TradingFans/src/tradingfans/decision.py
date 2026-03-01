@@ -43,8 +43,6 @@ W_M5  =  8.0   # 5m momentum weight
 W_VOL = -4.0   # vol penalty (high vol → less edge)
 
 MIN_EDGE = 0.02     # minimum |edge| to consider trading
-NO_TRADE_LO = 0.45  # \
-NO_TRADE_HI = 0.55  #  > hard no-trade zone (too close to coin flip)
 
 
 # ── Result ────────────────────────────────────────────────────
@@ -131,20 +129,6 @@ def compute(
     Returns:
         DecisionResult with signal and supporting analytics.
     """
-    # ── Hard no-trade zone (belt-and-suspenders; also enforced in risk.py) ──
-    if NO_TRADE_LO <= implied_yes <= NO_TRADE_HI:
-        return DecisionResult(
-            p_model=implied_yes,
-            edge=0.0,
-            m1=0.0, m5=0.0, vol1=0.0,
-            signal="NO_TRADE",
-            confidence=0.0,
-            reason=(
-                f"No-trade zone: implied_yes={implied_yes:.3f} "
-                f"∈ [{NO_TRADE_LO}, {NO_TRADE_HI}]"
-            ),
-        )
-
     # ── Compute features ──────────────────────────────────────
     m1   = _momentum(window, 60.0)  or 0.0
     m5   = _momentum(window, 300.0) or 0.0

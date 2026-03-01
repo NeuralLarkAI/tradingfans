@@ -155,15 +155,15 @@ async def _evaluate_market(
         implied_yes=implied_yes,
     )
     if not rc.ok:
-        log.debug("RISK FAIL | %s… | %s", market.market_id[:12], " | ".join(rc.reasons))
+        log.info("RISK FAIL | %s | %s", market.question[:40], " | ".join(rc.reasons))
         return None
 
     decision = decision_compute(window=window, implied_yes=implied_yes)
 
-    log.debug(
-        "SIGNAL=%s | tte=%.0fs | impl=%.3f | model=%.3f | edge=%+.4f | %s…",
+    log.info(
+        "SIGNAL %-8s | tte=%3.0fs | impl=%.3f | model=%.3f | edge=%+.4f | %s",
         decision.signal, market.time_to_expiry, implied_yes,
-        decision.p_model, decision.edge, market.market_id[:12],
+        decision.p_model, decision.edge, market.question[:35],
     )
 
     # Always record the signal (even NO_TRADE) for the dashboard

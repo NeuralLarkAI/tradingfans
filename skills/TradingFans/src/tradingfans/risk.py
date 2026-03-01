@@ -6,11 +6,13 @@ This is the last line of defense before capital is committed.
 
 Guardrails (in evaluation order):
   1. time_to_expiry must be in (0, 600) seconds
-  2. Spot price must be fresh (last Binance tick ≤ 2s ago)
-  3. Order book must be available
-  4. Spread ≤ 3%
-  5. Depth ≥ $100 notional within ±1.5% of mid
-  6. Implied YES not in [0.45, 0.55]   (belt-and-suspenders; also in decision.py)
+  2. Spot price must be fresh (last tick ≤ STALE_THRESHOLD ago)
+  3. Order book must be available  [skipped in dry-run]
+  4. Spread ≤ 3%                   [skipped in dry-run]
+  5. Depth ≥ $100 notional         [skipped in dry-run]
+
+In dry-run mode (POLY_DRY_RUN=1), CLOB spread/depth checks are bypassed
+because no real orders are placed, so fill quality is irrelevant.
 
 Usage:
     from .risk import evaluate, RiskCheck
@@ -22,6 +24,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from .clob import OrderBook, check_depth, check_spread
@@ -29,8 +32,6 @@ from .clob import OrderBook, check_depth, check_spread
 # ── Thresholds ────────────────────────────────────────────────
 MIN_TIME_TO_EXPIRY = 0.0    # seconds (must be > 0, i.e., not expired)
 MAX_TIME_TO_EXPIRY = 600.0  # seconds (10-minute cap)
-NO_TRADE_LO = 0.45
-NO_TRADE_HI = 0.55
 
 
 # ── Result ────────────────────────────────────────────────────
@@ -65,13 +66,14 @@ def evaluate(
 
     Args:
         time_to_expiry: Seconds until market closes (from Market.time_to_expiry).
-        spot_fresh:     Whether the Binance spot feed has ticked within 2 seconds.
+        spot_fresh:     Whether spot feed has ticked within STALE_THRESHOLD.
         book:           Live CLOB order book (None if unavailable).
         implied_yes:    Mid price of YES token (0–1).
 
     Returns:
         RiskCheck.ok == True only if ALL guardrails pass.
     """
+    dry_run = os.environ.get("POLY_DRY_RUN", "0") == "1"
     rc = RiskCheck()
 
     # 1. Time filter: only trade in the final 10 minutes before expiry
@@ -83,26 +85,20 @@ def evaluate(
 
     # 2. Spot freshness
     if not spot_fresh:
-        rc.fail("Spot price stale — last Binance tick > 2 seconds ago")
+        rc.fail("Spot price stale")
 
-    # 3–5. Order book checks
-    if book is None:
-        rc.fail("Order book unavailable")
-    else:
-        # 4. Spread
-        spread_ok, spread_val = check_spread(book)
-        if not spread_ok:
-            rc.fail(f"Spread {spread_val:.4f} exceeds max {0.03:.2f}")
+    # 3–5. Order book checks — skipped in dry run (no real fills)
+    if not dry_run:
+        if book is None:
+            rc.fail("Order book unavailable")
+        else:
+            # 4. Spread
+            spread_ok, spread_val = check_spread(book)
+            if not spread_ok:
+                rc.fail(f"Spread {spread_val:.4f} exceeds max {0.03:.2f}")
 
-        # 5. Depth
-        if not check_depth(book, book.mid):
-            rc.fail("Insufficient depth near mid (< $100 USDC notional)")
-
-    # 6. No-trade zone (belt-and-suspenders)
-    if NO_TRADE_LO <= implied_yes <= NO_TRADE_HI:
-        rc.fail(
-            f"Implied YES {implied_yes:.3f} in no-trade zone "
-            f"[{NO_TRADE_LO}, {NO_TRADE_HI}]"
-        )
+            # 5. Depth
+            if not check_depth(book, book.mid):
+                rc.fail("Insufficient depth near mid (< $100 USDC notional)")
 
     return rc
