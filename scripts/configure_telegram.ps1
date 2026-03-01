@@ -31,12 +31,34 @@ if (!(Test-Path $envFile)) {
   New-Item -ItemType File -Path $envFile -Force | Out-Null
 }
 
-$tokenSecure = Read-Host -Prompt "Paste TELEGRAM_BOT_TOKEN" -AsSecureString
-$token = SecureStringToPlain $tokenSecure
+$token = $null
+try { $token = (Get-Clipboard -Raw) } catch {}
+$token = ($token ?? '').Trim()
+
+if ([string]::IsNullOrWhiteSpace($token)) {
+  Write-Host "Copy your TELEGRAM_BOT_TOKEN to clipboard, then press Enter."
+  Read-Host | Out-Null
+  try { $token = (Get-Clipboard -Raw) } catch { $token = '' }
+  $token = ($token ?? '').Trim()
+}
+
+if ([string]::IsNullOrWhiteSpace($token)) {
+  Write-Host "Clipboard was empty. Falling back to hidden prompt."
+  $tokenSecure = Read-Host -Prompt "Enter TELEGRAM_BOT_TOKEN" -AsSecureString
+  $token = (SecureStringToPlain $tokenSecure).Trim()
+}
+
 if ([string]::IsNullOrWhiteSpace($token)) { throw "Empty token" }
 
-$pinSecure = Read-Host -Prompt "Optional TELEGRAM_PAIR_PIN (press Enter to skip)" -AsSecureString
-$pin = SecureStringToPlain $pinSecure
+if ($token -notmatch '^\d+:[A-Za-z0-9_-]{20,}$') {
+  Write-Host "Warning: token doesn't match expected Telegram format (id:secret)."
+}
+
+$pin = ''
+Write-Host "Optional: copy TELEGRAM_PAIR_PIN to clipboard (or leave empty) then press Enter."
+Read-Host | Out-Null
+try { $pin = (Get-Clipboard -Raw) } catch { $pin = '' }
+$pin = ($pin ?? '').Trim()
 
 $lines = @()
 if (Test-Path $envFile) { $lines = Get-Content $envFile }
@@ -50,3 +72,4 @@ Set-Content -Path $envFile -Value $lines -Encoding utf8
 Write-Host "Saved Telegram settings to $envFile"
 Write-Host "Next: restart agent, then message the bot: /pair"
 
+try { Set-Clipboard -Value '' } catch {}
