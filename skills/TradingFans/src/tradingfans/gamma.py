@@ -153,9 +153,16 @@ def _parse_markets(event: dict) -> list[Market]:
 
 def _fetch_markets() -> list[Market]:
     """Synchronous fetch — run in executor to avoid blocking event loop."""
+    now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     resp = requests.get(
         GAMMA_URL,
-        params={"active": "true", "closed": "false"},
+        params={
+            "active": "true",
+            "closed": "false",
+            "tag_slug": "5m",
+            "end_date_min": now_iso,
+            "limit": "100",
+        },
         timeout=12,
         headers={"Accept": "application/json"},
     )
@@ -170,10 +177,6 @@ def _fetch_markets() -> list[Market]:
 
     markets: list[Market] = []
     for event in events:
-        if not _is_crypto_tagged(event):
-            continue
-        if not _is_five_minute(event):
-            continue
         markets.extend(_parse_markets(event))
 
     return markets
