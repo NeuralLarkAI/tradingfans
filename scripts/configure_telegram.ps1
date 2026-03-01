@@ -20,12 +20,6 @@ function Upsert-EnvLine([string[]]$Lines, [string]$Key, [string]$Value) {
   return ,$out
 }
 
-function SecureStringToPlain([Security.SecureString]$s) {
-  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
-  try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-  finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-}
-
 $envFile = Join-Path $RepoRoot '.env'
 if (!(Test-Path $envFile)) {
   New-Item -ItemType File -Path $envFile -Force | Out-Null
@@ -43,15 +37,17 @@ if ([string]::IsNullOrWhiteSpace($token)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($token)) {
-  Write-Host "Clipboard was empty. Falling back to hidden prompt."
-  $tokenSecure = Read-Host -Prompt "Enter TELEGRAM_BOT_TOKEN" -AsSecureString
-  $token = (SecureStringToPlain $tokenSecure).Trim()
+  Write-Host "Clipboard was empty. Enter token directly (will be visible in this terminal):"
+  $token = (Read-Host -Prompt "TELEGRAM_BOT_TOKEN").Trim()
 }
 
 if ([string]::IsNullOrWhiteSpace($token)) { throw "Empty token" }
 
+# Sanitize: remove invisible / non-ASCII characters that often get pasted.
+$token = -join ($token.ToCharArray() | Where-Object { $_ -match '[0-9A-Za-z:_-]' })
+
 if ($token -notmatch '^\d+:[A-Za-z0-9_-]{20,}$') {
-  Write-Host "Warning: token doesn't match expected Telegram format (id:secret)."
+  throw "Token format looks wrong after sanitization. Re-copy from BotFather and try again."
 }
 
 $pin = ''
@@ -59,6 +55,9 @@ Write-Host "Optional: copy TELEGRAM_PAIR_PIN to clipboard (or leave empty) then 
 Read-Host | Out-Null
 try { $pin = (Get-Clipboard -Raw) } catch { $pin = '' }
 $pin = ($pin ?? '').Trim()
+if (-not [string]::IsNullOrWhiteSpace($pin)) {
+  $pin = -join ($pin.ToCharArray() | Where-Object { $_ -match '[0-9A-Za-z@#%+=:_-]' })
+}
 
 $lines = @()
 if (Test-Path $envFile) { $lines = Get-Content $envFile }
