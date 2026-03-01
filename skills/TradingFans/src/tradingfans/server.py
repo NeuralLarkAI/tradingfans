@@ -831,7 +831,7 @@ function renderRemote(remote) {
   const tg = remote?.telegram;
   if (!tg) { el.textContent = 'Telegram: OFF'; return; }
   if (!tg.enabled) {
-    el.innerHTML = `Telegram: <span class="t-dim">OFF</span> · set <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_CHAT_ID</code>`;
+    el.innerHTML = `Telegram: <span class="t-dim">OFF</span> · set <code>TELEGRAM_BOT_TOKEN</code> then send <code>/pair</code> to the bot`;
     return;
   }
   const st = tg.status || 'ON';
