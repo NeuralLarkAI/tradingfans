@@ -10,6 +10,15 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$SKILL_DIR/src"
 VENV="$SKILL_DIR/.venv"
 
+# ── Dotenv auto-load FIRST (before guard check) ───────────────
+ENV_FILE="$(dirname "$(dirname "$SKILL_DIR")")/.env"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
 # ── Required env var guard ─────────────────────────────────────
 REQUIRED_VARS=(POLY_PRIVATE_KEY POLY_FUNDER OPENAI_API_KEY)
 MISSING=()
@@ -29,32 +38,33 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   exit 1
 fi
 
-# ── Dotenv auto-load (optional .env at project root) ──────────
-ENV_FILE="$(dirname "$(dirname "$SKILL_DIR")")/.env"
-if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-fi
-
 # ── Python 3.11 discovery ──────────────────────────────────────
 find_python() {
-  for candidate in python3.11 python3 python; do
+  # Explicit Windows AppData paths first (avoids Windows Store alias)
+  local win_candidates=(
+    "$LOCALAPPDATA/Programs/Python/Python313/python.exe"
+    "$LOCALAPPDATA/Programs/Python/Python312/python.exe"
+    "$LOCALAPPDATA/Programs/Python/Python311/python.exe"
+    "$LOCALAPPDATA/Programs/Python/Python310/python.exe"
+  )
+  for candidate in "${win_candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  # Standard PATH candidates (skip Windows Store aliases)
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
     if command -v "$candidate" &>/dev/null; then
       local ver
-      ver=$("$candidate" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
-      if [[ "$ver" == "3.11" ]]; then
+      ver=$("$candidate" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null) || continue
+      # Skip if it's a Windows Store stub (outputs nothing or errors)
+      if [[ -n "$ver" ]]; then
         echo "$candidate"
         return 0
       fi
     fi
   done
-  # Fallback: any python3 (warn)
-  if command -v python3 &>/dev/null; then
-    echo "python3"
-    return 0
-  fi
   return 1
 }
 
@@ -65,8 +75,8 @@ if [[ -z "$PY" ]]; then
 fi
 
 PY_VER=$("$PY" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-if [[ "$PY_VER" != "3.11" ]]; then
-  echo "⚠️   Python $PY_VER detected — 3.11 strongly recommended." >&2
+if [[ "$PY_VER" < "3.10" ]]; then
+  echo "⚠️   Python $PY_VER detected — 3.10+ required." >&2
 fi
 
 # ── Virtualenv bootstrap ───────────────────────────────────────

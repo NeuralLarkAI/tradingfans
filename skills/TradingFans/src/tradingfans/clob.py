@@ -18,8 +18,11 @@ import os
 from dataclasses import dataclass, field
 
 from py_clob_client.client import ClobClient as _ClobClient
-from py_clob_client.clob_types import OrderArgs, Side
+from py_clob_client.clob_types import OrderArgs
 from py_clob_client.constants import POLYGON
+
+# In py-clob-client >= 0.20, Side is a plain string constant
+BUY = "BUY"
 
 log = logging.getLogger(__name__)
 
@@ -164,7 +167,7 @@ class ClobClient:
             order_args = OrderArgs(
                 price=price,
                 size=size_usdc,
-                side=Side.BUY,
+                side=BUY,
                 token_id=token_id,
             )
             resp = self._client.create_and_post_order(order_args)

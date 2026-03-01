@@ -27,8 +27,9 @@ from websockets.exceptions import ConnectionClosed
 
 log = logging.getLogger(__name__)
 
-# Binance combined stream endpoint
-BINANCE_WS_URL = "wss://stream.binance.com:9443/stream"
+# Binance endpoints — .us domain for US IPs (avoids HTTP 451 geo-block)
+BINANCE_WS_GLOBAL = "wss://stream.binance.com:9443/stream"
+BINANCE_WS_US     = "wss://stream.binance.us:9443/stream"
 
 STREAMS: dict[str, str] = {
     "BTC": "btcusdt@aggTrade",
@@ -94,9 +95,12 @@ class SpotFeed:
 
     async def _run(self) -> None:
         combined = "/".join(STREAMS.values())
-        url = f"{BINANCE_WS_URL}?streams={combined}"
+        # Try global first, fall back to .us on 451 (US geo-block)
+        endpoints = [BINANCE_WS_US, BINANCE_WS_GLOBAL]
+        ep_idx = 0
 
         while self._running:
+            url = f"{endpoints[ep_idx % len(endpoints)]}?streams={combined}"
             try:
                 async with websockets.connect(
                     url,
@@ -104,7 +108,7 @@ class SpotFeed:
                     ping_timeout=10,
                     close_timeout=5,
                 ) as ws:
-                    log.info("SpotFeed: connected to Binance WebSocket.")
+                    log.info("SpotFeed: connected to %s", url.split("?")[0])
                     async for raw in ws:
                         if not self._running:
                             break
@@ -113,10 +117,20 @@ class SpotFeed:
             except asyncio.CancelledError:
                 break
             except ConnectionClosed as exc:
-                log.warning("SpotFeed: connection closed (%s) — reconnecting in %.0fs", exc, RECONNECT_DELAY)
+                code = getattr(exc, "code", None)
+                if code == 451:
+                    ep_idx += 1
+                    log.warning("SpotFeed: geo-blocked (451) — switching endpoint.")
+                else:
+                    log.warning("SpotFeed: connection closed (%s) — reconnecting in %.0fs", exc, RECONNECT_DELAY)
                 await asyncio.sleep(RECONNECT_DELAY)
             except Exception as exc:
-                log.warning("SpotFeed: unexpected error (%s) — reconnecting in %.0fs", exc, RECONNECT_DELAY)
+                msg = str(exc)
+                if "451" in msg:
+                    ep_idx += 1
+                    log.warning("SpotFeed: geo-blocked (451) — trying alternate endpoint.")
+                else:
+                    log.warning("SpotFeed: error (%s) — reconnecting in %.0fs", exc, RECONNECT_DELAY)
                 await asyncio.sleep(RECONNECT_DELAY)
 
     def _handle(self, raw: str | bytes) -> None:
