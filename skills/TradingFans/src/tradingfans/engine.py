@@ -212,6 +212,8 @@ async def _evaluate_market(
     if order_id:
         _open_positions.add(market.market_id)
         STATE.trade_count += 1
+        if STATE.dry_run:
+            STATE.dry_deployed += size   # track virtual capital committed
         # Update the last signal record with the real order_id
         if STATE.recent_signals:
             sr = STATE.recent_signals[0]
@@ -222,6 +224,58 @@ async def _evaluate_market(
             )
 
     return market, decision, size, order_id
+
+
+# ── Wallet balance polling ────────────────────────────────────
+
+async def _fetch_wallet_balance() -> tuple[float | None, float | None]:
+    """Fetch USDC and MATIC balance from Polygon via public RPC."""
+    import aiohttp as _aiohttp
+    address = STATE.wallet_address
+    if not address:
+        return None, None
+
+    POLYGON_RPC = "https://polygon-rpc.com"
+    USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e on Polygon
+
+    try:
+        addr_raw = (address[2:] if address.startswith("0x") else address).lower()
+        calldata = "0x70a08231" + addr_raw.zfill(64)   # balanceOf(address)
+
+        async with _aiohttp.ClientSession() as sess:
+            # USDC balance
+            r1 = await sess.post(POLYGON_RPC, json={
+                "jsonrpc": "2.0", "method": "eth_call",
+                "params": [{"to": USDC_CONTRACT, "data": calldata}, "latest"],
+                "id": 1,
+            }, timeout=_aiohttp.ClientTimeout(total=8))
+            hex_u = (await r1.json()).get("result", "0x0")
+            usdc = int(hex_u, 16) / 1_000_000   # 6 decimals
+
+            # MATIC balance
+            r2 = await sess.post(POLYGON_RPC, json={
+                "jsonrpc": "2.0", "method": "eth_getBalance",
+                "params": [address, "latest"],
+                "id": 2,
+            }, timeout=_aiohttp.ClientTimeout(total=8))
+            hex_m = (await r2.json()).get("result", "0x0")
+            matic = int(hex_m, 16) / 1e18
+
+        return usdc, matic
+    except Exception as exc:
+        log.debug("Wallet fetch failed: %s", exc)
+        return None, None
+
+
+async def wallet_poll_loop() -> None:
+    """Poll Polygon for wallet USDC/MATIC balance every 60 seconds."""
+    while True:
+        usdc, matic = await _fetch_wallet_balance()
+        if usdc is not None:
+            STATE.wallet_usdc = usdc
+            STATE.wallet_matic = matic
+            log.debug("Wallet: USDC=%.2f MATIC=%.4f", usdc, matic)
+        await asyncio.sleep(60)
 
 
 # ── Main trading loop ─────────────────────────────────────────
@@ -346,6 +400,9 @@ async def main() -> None:
     log.info("  Poll    : %.1fs", POLL_INTERVAL)
     log.info("=" * 60)
 
+    # Load wallet address into STATE for the dashboard
+    STATE.wallet_address = os.environ.get("POLY_FUNDER", "").strip()
+
     gamma = GammaCache()
     spot  = SpotFeed()
     clob  = ClobClient()
@@ -377,15 +434,20 @@ async def main() -> None:
         trading_loop(gamma, spot, clob, llm, max_size, sym_filter),
         name="trading-loop",
     )
+    wallet_task = asyncio.create_task(
+        wallet_poll_loop(),
+        name="wallet-poll",
+    )
 
     await stop_event.wait()
     log.info("Shutting down...")
 
-    trade_task.cancel()
-    try:
-        await trade_task
-    except asyncio.CancelledError:
-        pass
+    for task in (trade_task, wallet_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     await spot.stop()
     await llm.stop()

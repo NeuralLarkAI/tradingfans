@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -48,6 +48,8 @@ class SignalRecord:
 
 
 class AgentState:
+    DRY_START_BALANCE: float = 10_000.0
+
     def __init__(self) -> None:
         self.started_at: float = time.time()
         self.dry_run: bool = True
@@ -61,10 +63,18 @@ class AgentState:
         # Active markets currently in the scan window
         self.active_markets: list[ActiveMarket] = []
 
-        # Signal history
+        # Signal history (newest first via appendleft)
         self.recent_signals: deque[SignalRecord] = deque(maxlen=200)
         self.trade_count: int = 0
         self.scan_count: int = 0
+
+        # Dry-run portfolio tracking
+        self.dry_deployed: float = 0.0   # running total USDC committed in dry-run
+
+        # Mainnet wallet
+        self.wallet_address: str = ""
+        self.wallet_usdc: float | None = None
+        self.wallet_matic: float | None = None
 
         # Raw log lines for the live log panel
         self.log_lines: deque[str] = deque(maxlen=600)
@@ -84,6 +94,38 @@ class AgentState:
                 "fresh": q.fresh,
                 "change_1m_pct": round(q.change_1m_pct * 100, 3),
                 "change_5m_pct": round(q.change_5m_pct * 100, 3),
+            }
+
+        all_sigs = list(self.recent_signals)
+
+        # Dry-run trades: non-NO_TRADE signals with size > 0 in dry mode
+        dry_trades = [
+            s for s in all_sigs
+            if s.signal != "NO_TRADE" and s.size_usdc > 0
+            and (s.order_id == "dry-run" or (self.dry_run and s.order_id is None and s.size_usdc > 0))
+        ]
+        # Mainnet trades: real order IDs (not "dry-run", not None)
+        live_trades = [
+            s for s in all_sigs
+            if s.order_id and s.order_id != "dry-run"
+        ]
+
+        exp_pnl = sum(abs(s.edge) * s.size_usdc for s in dry_trades)
+        deployed = self.dry_deployed
+        available = max(0.0, self.DRY_START_BALANCE - deployed)
+
+        def trade_dict(s: SignalRecord, mode: str) -> dict:
+            return {
+                "ts": s.ts,
+                "symbol": s.symbol,
+                "signal": s.signal,
+                "size_usdc": round(s.size_usdc, 2),
+                "price": round(s.implied_yes * 100, 1),       # as % for display
+                "edge": round(s.edge * 100, 2),               # as % for display
+                "exp_pnl": round(abs(s.edge) * s.size_usdc, 2),
+                "question": s.question,
+                "order_id": s.order_id or "",
+                "mode": mode,
             }
 
         return {
@@ -120,11 +162,27 @@ class AgentState:
                     "question": s.question,
                     "symbol": s.symbol,
                 }
-                for s in self.recent_signals
+                for s in all_sigs
             ],
             "trade_count": self.trade_count,
             "scan_count": self.scan_count,
             "log_lines": list(self.log_lines)[-100:],
+            # ── Dry-run portfolio ──────────────────────────────────
+            "dry_balance": {
+                "start":    self.DRY_START_BALANCE,
+                "deployed": round(deployed, 2),
+                "available": round(available, 2),
+                "exp_pnl":  round(exp_pnl, 2),
+                "trade_count": len(dry_trades),
+            },
+            "dry_trades":  [trade_dict(s, "DRY")  for s in dry_trades[:100]],
+            "live_trades": [trade_dict(s, "LIVE") for s in live_trades[:100]],
+            # ── Mainnet wallet ────────────────────────────────────
+            "wallet": {
+                "address": self.wallet_address,
+                "usdc":    round(self.wallet_usdc, 2)  if self.wallet_usdc  is not None else None,
+                "matic":   round(self.wallet_matic, 4) if self.wallet_matic is not None else None,
+            },
         }
 
 
