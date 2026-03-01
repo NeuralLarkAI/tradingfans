@@ -48,7 +48,7 @@ SPECS: dict[str, ParamSpec] = {
     "decision.min_edge": ParamSpec(
         key="decision.min_edge",
         default=0.02,
-        min_v=0.005,
+        min_v=0.001,
         max_v=0.06,
         step=0.001,
         description="Minimum |edge| threshold to emit BUY_YES/BUY_NO.",
@@ -71,6 +71,33 @@ SPECS: dict[str, ParamSpec] = {
         step=0.5,
         description="Seconds between market scans.",
         live_allowed=True,
+    ),
+    "engine.min_order_size_usdc": ParamSpec(
+        key="engine.min_order_size_usdc",
+        default=1.00,
+        min_v=1.00,
+        max_v=20.00,
+        step=0.50,
+        description="Minimum order size (USDC) required to submit a trade.",
+        live_allowed=True,
+    ),
+    "engine.edge_full_scale": ParamSpec(
+        key="engine.edge_full_scale",
+        default=0.05,
+        min_v=0.01,
+        max_v=0.20,
+        step=0.005,
+        description="Sizing scale: edge_full_scale maps to max_size (sqrt sizing).",
+        live_allowed=False,
+    ),
+    "risk.max_time_to_expiry_sec": ParamSpec(
+        key="risk.max_time_to_expiry_sec",
+        default=600.0,
+        min_v=300.0,
+        max_v=7200.0,
+        step=300.0,
+        description="Maximum seconds-to-expiry allowed (risk time filter).",
+        live_allowed=False,
     ),
     "tuner.target_trades_per_hour": ParamSpec(
         key="tuner.target_trades_per_hour",
@@ -98,6 +125,8 @@ AUTO_ALLOWLIST: tuple[str, ...] = (
     "decision.min_edge",
     "engine.max_size_usdc",
     "engine.poll_interval_sec",
+    "engine.min_order_size_usdc",
+    "risk.max_time_to_expiry_sec",
 )
 
 
@@ -151,7 +180,17 @@ def init_from_config(*, dry_run: bool) -> None:
 
     def get(key: str) -> float:
         spec = SPECS[key]
-        raw = cfg.get("params", {}).get(key, spec.default)
+        params_in = cfg.get("params", {})
+        if key in params_in:
+            raw = params_in.get(key)
+        else:
+            # Dry-run sensible defaults when no config exists yet.
+            if dry_run and key == "engine.min_order_size_usdc":
+                raw = 1.00
+            elif dry_run and key == "risk.max_time_to_expiry_sec":
+                raw = 7200.0
+            else:
+                raw = spec.default
         return spec.quantize(raw)
 
     params = {k: get(k) for k in SPECS.keys()}
@@ -179,6 +218,9 @@ def init_from_config(*, dry_run: bool) -> None:
     STATE.min_edge = params["decision.min_edge"]
     STATE.max_size = params["engine.max_size_usdc"]
     STATE.poll_interval = params["engine.poll_interval_sec"]
+    STATE.min_order_size = params["engine.min_order_size_usdc"]
+    STATE.edge_full_scale = params["engine.edge_full_scale"]
+    STATE.max_time_to_expiry = params["risk.max_time_to_expiry_sec"]
 
 
 def persist_current() -> None:
@@ -189,6 +231,27 @@ def persist_current() -> None:
         "params": dict(STATE.tuner_params),
     }
     _atomic_write_json(path, payload)
+
+
+def set_param(key: str, value: float, *, source: str = "local") -> tuple[bool, float | None, float | None, str]:
+    """
+    Set a tunable parameter with bounds checking.
+    Returns: (ok, old, new, message)
+    """
+    if key not in SPECS:
+        return False, None, None, f"Unknown key: {key}"
+    spec = SPECS[key]
+    if not STATE.dry_run and not spec.live_allowed:
+        return False, None, None, f"{key} not allowed in live mode"
+
+    old = float(STATE.tuner_params.get(key, spec.default))
+    new = spec.quantize(value)
+    if new == old:
+        return True, old, new, "no_change"
+
+    _apply_param(key, new)
+    _emit_event(key, old, new, f"manual_set:{source}", {"source": source})
+    return True, old, new, "ok"
 
 
 def _emit_event(key: str, old: float, new: float, reason: str, metrics: dict) -> None:
@@ -225,6 +288,12 @@ def _apply_param(key: str, value: float) -> None:
         STATE.max_size = value
     elif key == "engine.poll_interval_sec":
         STATE.poll_interval = value
+    elif key == "engine.min_order_size_usdc":
+        STATE.min_order_size = value
+    elif key == "risk.max_time_to_expiry_sec":
+        STATE.max_time_to_expiry = value
+    elif key == "engine.edge_full_scale":
+        STATE.edge_full_scale = value
 
 
 def autotune_step() -> None:

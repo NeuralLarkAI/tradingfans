@@ -60,6 +60,8 @@ def evaluate(
     spot_fresh: bool,
     book: OrderBook | None,
     implied_yes: float,
+    *,
+    max_time_to_expiry: float = MAX_TIME_TO_EXPIRY,
 ) -> RiskCheck:
     """
     Run all guardrails and return a RiskCheck.
@@ -77,10 +79,10 @@ def evaluate(
     rc = RiskCheck()
 
     # 1. Time filter: only trade in the final 10 minutes before expiry
-    if not (MIN_TIME_TO_EXPIRY < time_to_expiry < MAX_TIME_TO_EXPIRY):
+    if not (MIN_TIME_TO_EXPIRY < time_to_expiry < max_time_to_expiry):
         rc.fail(
             f"time_to_expiry={time_to_expiry:.1f}s not in "
-            f"({MIN_TIME_TO_EXPIRY}, {MAX_TIME_TO_EXPIRY})"
+            f"({MIN_TIME_TO_EXPIRY}, {max_time_to_expiry})"
         )
 
     # 2. Spot freshness

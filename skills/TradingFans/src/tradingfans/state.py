@@ -35,6 +35,7 @@ class ActiveMarket:
 class SignalRecord:
     ts: str                # HH:MM:SS
     ts_epoch: float        # unix epoch seconds
+    expires_epoch: float   # unix epoch seconds (market end time)
     signal: str            # BUY_YES | BUY_NO | NO_TRADE
     edge: float
     p_model: float
@@ -54,10 +55,14 @@ class AgentState:
     def __init__(self) -> None:
         self.started_at: float = time.time()
         self.dry_run: bool = True
+        self.paused: bool = False
         self.max_size: float = 10.0
         self.symbol_filter: str = "BOTH"
         self.poll_interval: float = 5.0
         self.min_edge: float = 0.02
+        self.min_order_size: float = 0.50
+        self.edge_full_scale: float = 0.05
+        self.max_time_to_expiry: float = 600.0
 
         # Live spot quotes
         self.btc: SpotQuote | None = None
@@ -92,6 +97,17 @@ class AgentState:
         self.tuner_specs: list[dict] = []
         self.tuner_events: deque[dict] = deque(maxlen=250)
 
+        # Remote control (e.g., Telegram)
+        self.remote: dict = {
+            "telegram": {
+                "enabled": False,
+                "status": "OFF",
+                "allowed_chat_id": None,
+                "last_seen_epoch": None,
+                "last_error": "",
+            }
+        }
+
     def uptime_str(self) -> str:
         secs = int(time.time() - self.started_at)
         h, rem = divmod(secs, 3600)
@@ -111,11 +127,11 @@ class AgentState:
 
         all_sigs = list(self.recent_signals)
 
-        # Dry-run trades: non-NO_TRADE signals with size > 0 in dry mode
+        # Dry-run trades: executed dry-run orders (order_id == "dry-run")
         dry_trades = [
             s for s in all_sigs
-            if s.signal != "NO_TRADE" and s.size_usdc > 0
-            and (s.order_id == "dry-run" or (self.dry_run and s.order_id is None and s.size_usdc > 0))
+            if s.signal != "NO_TRADE"
+            and s.order_id == "dry-run"
         ]
         # Mainnet trades: real order IDs (not "dry-run", not None)
         live_trades = [
@@ -128,9 +144,13 @@ class AgentState:
         available = max(0.0, self.DRY_START_BALANCE - deployed)
 
         def trade_dict(s: SignalRecord, mode: str) -> dict:
+            now = time.time()
+            tte = max(0.0, float(s.expires_epoch) - now) if s.expires_epoch else 0.0
             return {
                 "ts": s.ts,
                 "ts_epoch": s.ts_epoch,
+                "expires_epoch": s.expires_epoch,
+                "tte_sec": round(tte, 1),
                 "symbol": s.symbol,
                 "signal": s.signal,
                 "size_usdc": round(s.size_usdc, 2),
@@ -149,6 +169,10 @@ class AgentState:
             "symbol_filter": self.symbol_filter,
             "poll_interval": self.poll_interval,
             "min_edge": self.min_edge,
+            "paused": self.paused,
+            "min_order_size": self.min_order_size,
+            "edge_full_scale": self.edge_full_scale,
+            "max_time_to_expiry": self.max_time_to_expiry,
             "btc": quote(self.btc),
             "eth": quote(self.eth),
             "active_markets": [
@@ -167,6 +191,7 @@ class AgentState:
                 {
                     "ts": s.ts,
                     "ts_epoch": s.ts_epoch,
+                    "expires_epoch": s.expires_epoch,
                     "signal": s.signal,
                     "edge": round(s.edge, 4),
                     "p_model": round(s.p_model, 4),
@@ -211,6 +236,7 @@ class AgentState:
                 "specs": list(self.tuner_specs),
                 "events": list(self.tuner_events),
             },
+            "remote": dict(self.remote),
         }
 
 

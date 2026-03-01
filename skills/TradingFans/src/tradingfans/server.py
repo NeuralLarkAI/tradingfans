@@ -234,7 +234,7 @@ body::before {
 
 /* ── Trade table ── */
 .trade-hdr {
-  display: grid; grid-template-columns: 50px 34px 68px 58px 52px 56px 1fr;
+  display: grid; grid-template-columns: 50px 52px 34px 68px 58px 52px 56px 1fr;
   gap: 8px; align-items: center;
   padding: 5px 16px; flex-shrink: 0;
   background: var(--bg2); border-bottom: 1px solid var(--border);
@@ -270,7 +270,7 @@ body::before {
 .trade-list::-webkit-scrollbar { width: 2px; }
 .trade-list::-webkit-scrollbar-thumb { background: var(--dim2); }
 .trade-row {
-  display: grid; grid-template-columns: 50px 34px 68px 58px 52px 56px 1fr;
+  display: grid; grid-template-columns: 50px 52px 34px 68px 58px 52px 56px 1fr;
   gap: 8px; align-items: center;
   padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: 11px;
   animation: sli 0.25s ease-out both;
@@ -345,7 +345,9 @@ body::before {
   <div id="hdr-mid">
     <div class="kv">MAX <b id="h-max">—</b></div>
     <div class="kv">SYM <b id="h-sym">—</b></div>
-    <div class="kv">POLL <b>5s</b></div>
+    <div class="kv">POLL <b id="h-poll">—</b></div>
+    <div class="kv">MIN EDGE <b id="h-edge">—</b></div>
+    <div class="kv">MIN SIZE <b id="h-minsz">—</b></div>
     <div class="kv">NET <b>Polygon</b></div>
   </div>
   <div id="hdr-right">
@@ -451,7 +453,7 @@ body::before {
 
       <!-- Trade table header -->
       <div class="trade-hdr">
-        <span>TIME</span><span>SYM</span><span>SIGNAL</span>
+        <span>TIME</span><span>TTE</span><span>SYM</span><span>SIGNAL</span>
         <span style="text-align:right">SIZE</span>
         <span style="text-align:right">PRICE</span>
         <span style="text-align:right">EDGE</span>
@@ -499,7 +501,7 @@ body::before {
 
       <!-- Live trade table header -->
       <div class="trade-hdr">
-        <span>TIME</span><span>SYM</span><span>SIGNAL</span>
+        <span>TIME</span><span>TTE</span><span>SYM</span><span>SIGNAL</span>
         <span style="text-align:right">SIZE</span>
         <span style="text-align:right">PRICE</span>
         <span style="text-align:right">EDGE</span>
@@ -518,6 +520,7 @@ body::before {
         <div class="tuner-title">Autotuner (bounded self-optimization)</div>
         <div class="tuner-status off" id="tu-status">OFF</div>
         <div class="tuner-meta" id="tu-meta">Allowlisted knobs only · bounded changes · persisted to config</div>
+        <div class="tuner-meta" id="tu-remote">Telegram: OFF</div>
       </div>
 
       <div class="tuner-grid-hdr">
@@ -560,6 +563,13 @@ const fmtD = (n, d=2) => (n >= 0 ? '+' : '') + '$' + fmt(Math.abs(n), d);
 const pcls = v => v > 0.001 ? 'up' : v < -0.001 ? 'dn' : 'flat';
 const pstr = v => (v >= 0 ? '+' : '') + fmt(v, 3) + '%';
 const p2   = n => String(Math.floor(Math.max(0, n))).padStart(2, '0');
+const fmtTte = sec => {
+  sec = Math.max(0, Number(sec || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return (h > 0 ? (h + ':' + p2(m)) : String(m)) + ':' + p2(s);
+};
 
 // ── Tab switching ──────────────────────────────────────────────
 function switchTab(tab) {
@@ -654,22 +664,29 @@ function renderDryTrades(trades) {
   const el = $('dry-trade-list');
   if (!trades || !trades.length) {
     el.innerHTML = '<div class="no-data">No dry-run trades yet — waiting for signal &gt; 2% edge</div>';
+    $('dr-pnl-sub').textContent = 'Time-to-expiry appears once trades execute';
     return;
   }
   el.innerHTML = trades.map(t => {
     const bc  = t.signal === 'BUY_YES' ? 't-yes' : 't-no';
     const lbl = t.signal === 'BUY_YES' ? 'BUY YES' : 'BUY NO';
     const ec  = t.edge >= 0 ? 'p' : 'n';
+    const pc  = t.exp_pnl >= 0 ? 'pos' : 'neg';
     return `<div class="trade-row">
       <span class="t-ts">${t.ts}</span>
+      <span class="t-ts">${fmtTte(t.tte_sec)}</span>
       <span class="t-sym">${t.symbol}</span>
       <span class="t-badge ${bc}">${lbl}</span>
       <span class="t-size">$${fmt(t.size_usdc)}</span>
       <span class="t-price">${t.price.toFixed(1)}%</span>
       <span class="t-edge ${ec}">${t.edge >= 0 ? '+' : ''}${t.edge.toFixed(2)}%</span>
-      <span class="t-pnl pos">+$${fmt(t.exp_pnl)}</span>
+      <span class="t-pnl ${pc}">${fmtD(t.exp_pnl)}</span>
     </div>`;
   }).join('');
+  const next = Math.min(...trades.map(t => Number(t.tte_sec || 0)).filter(x => x > 0));
+  if (isFinite(next) && next > 0) {
+    $('dr-pnl-sub').textContent = `Next expiry: ${fmtTte(next)} — expected vs market`;
+  }
 }
 
 // ── Render wallet card ─────────────────────────────────────────
@@ -729,6 +746,7 @@ function renderLiveTrades(trades, dryRun) {
     const ec  = t.edge >= 0 ? 'p' : 'n';
     return `<div class="trade-row">
       <span class="t-ts">${t.ts}</span>
+      <span class="t-ts">${fmtTte(t.tte_sec)}</span>
       <span class="t-sym">${t.symbol}</span>
       <span class="t-badge ${bc}">${lbl}</span>
       <span class="t-size">$${fmt(t.size_usdc)}</span>
@@ -745,6 +763,7 @@ function renderLiveTrades(trades, dryRun) {
 function renderTuner(tuner, dryRun) {
   const statusEl = $('tu-status');
   const metaEl   = $('tu-meta');
+  const remoteEl = $('tu-remote');
   const pEl      = $('tuner-param-list');
   const eEl      = $('tuner-event-list');
 
@@ -752,6 +771,7 @@ function renderTuner(tuner, dryRun) {
     statusEl.textContent = 'OFF';
     statusEl.className = 'tuner-status off';
     metaEl.textContent = 'No tuner data available.';
+    remoteEl.textContent = 'Telegram: OFF';
     pEl.innerHTML = '<div class="no-data">No tuner data</div>';
     eEl.innerHTML = '<div class="no-data">No tuning changes yet</div>';
     return;
@@ -805,6 +825,19 @@ function renderTuner(tuner, dryRun) {
   }
 }
 
+function renderRemote(remote) {
+  const el = $('tu-remote');
+  if (!el) return;
+  const tg = remote?.telegram;
+  if (!tg) { el.textContent = 'Telegram: OFF'; return; }
+  if (!tg.enabled) {
+    el.innerHTML = `Telegram: <span class="t-dim">OFF</span> · set <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_CHAT_ID</code>`;
+    return;
+  }
+  const st = tg.status || 'ON';
+  el.innerHTML = `Telegram: <span class="t-dim">${st}</span>`;
+}
+
 function copyWallet() {
   if (!walletAddr) return;
   navigator.clipboard.writeText(walletAddr).then(() => {
@@ -844,6 +877,9 @@ async function poll() {
     $('uptime').textContent = d.uptime;
     $('h-max').textContent  = '$' + d.max_size;
     $('h-sym').textContent  = d.symbol_filter;
+    $('h-poll').textContent = (d.poll_interval ?? 5).toFixed(1) + 's';
+    $('h-edge').textContent = (d.min_edge ?? 0.02).toFixed(3);
+    $('h-minsz').textContent = '$' + fmt((d.min_order_size ?? 0.5), 2);
     const b = $('mode-badge');
     b.className   = d.dry_run ? 'badge badge-dry' : 'badge badge-live';
     b.textContent = d.dry_run ? 'DRY RUN' : '● LIVE';
@@ -874,6 +910,7 @@ async function poll() {
 
     // Tuner tab
     renderTuner(d.tuner, d.dry_run);
+    renderRemote(d.remote);
 
     // Log
     if (d.log_lines && d.log_lines.length > lastLog) {

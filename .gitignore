@@ -18,6 +18,7 @@ build/
 # TradingFans local runtime config/state
 skills/TradingFans/config/tuner.json
 skills/TradingFans/config/*.tmp
+skills/TradingFans/config/remote.json
 
 # OS
 .DS_Store

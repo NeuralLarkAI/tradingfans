@@ -27,6 +27,7 @@ from .server import start_server
 from .spot import SpotFeed
 from .state import STATE, ActiveMarket, SignalRecord, SpotQuote
 from .tuner import autotune_loop, init_from_config
+from .telegram_remote import telegram_loop
 
 # ── Custom log handler → STATE.log_lines ──────────────────────
 
@@ -81,7 +82,10 @@ def _detect_symbol(market: Market) -> str | None:
 
 
 def _size_usdc(edge: float, max_size: float) -> float:
-    fraction = min(abs(edge) / 0.20, 1.0)
+    scale = max(0.001, float(getattr(STATE, "edge_full_scale", 0.05)))
+    # Convex sizing: small edges still get meaningful size, while large edges saturate at max_size.
+    ratio = max(0.0, abs(edge) / scale)
+    fraction = min(ratio ** 0.5, 1.0)
     return round(max(fraction * max_size, 0.0), 2)
 
 
@@ -121,6 +125,33 @@ def _update_spot_state(spot: SpotFeed) -> None:
             STATE.eth = q
 
 
+async def _wait_for_spot_history(spot: SpotFeed, *, symbols: list[str], min_age_sec: float = 60.0, timeout_sec: float = 90.0) -> None:
+    """
+    Wait until the spot window contains at least min_age_sec of history for each symbol.
+    This prevents the decision model from seeing m1/m5 as 0.0 due to insufficient history.
+    """
+    start = time.monotonic()
+    log.info("Warming up spot history (need %.0fs)…", min_age_sec)
+    while True:
+        ready = True
+        for sym in symbols:
+            w = spot.window(sym)
+            if not w:
+                ready = False
+                break
+            now_ts = w[-1][0]
+            if not any(ts <= (now_ts - min_age_sec) for ts, _ in w):
+                ready = False
+                break
+        if ready:
+            log.info("Spot warm-up complete.")
+            return
+        if (time.monotonic() - start) >= timeout_sec:
+            log.warning("Spot warm-up timed out after %.0fs — continuing anyway.", timeout_sec)
+            return
+        await asyncio.sleep(2.0)
+
+
 # ── Per-market evaluation ─────────────────────────────────────
 
 async def _evaluate_market(
@@ -154,6 +185,7 @@ async def _evaluate_market(
         spot_fresh=spot_fresh,
         book=book,
         implied_yes=implied_yes,
+        max_time_to_expiry=STATE.max_time_to_expiry,
     )
     if not rc.ok:
         log.info("RISK FAIL | %s | %s", market.question[:40], " | ".join(rc.reasons))
@@ -172,6 +204,7 @@ async def _evaluate_market(
         SignalRecord(
             ts=_hms(),
             ts_epoch=datetime.datetime.now(tz=datetime.timezone.utc).timestamp(),
+            expires_epoch=market.end_time.timestamp(),
             signal=decision.signal,
             edge=decision.edge,
             p_model=decision.p_model,
@@ -179,7 +212,7 @@ async def _evaluate_market(
             m1=decision.m1,
             m5=decision.m5,
             vol1=decision.vol1,
-            size_usdc=_size_usdc(decision.edge, max_size) if decision.signal != "NO_TRADE" else 0.0,
+            size_usdc=0.0,
             order_id=None,
             question=market.question,
             symbol=symbol,
@@ -189,9 +222,9 @@ async def _evaluate_market(
     if decision.signal == "NO_TRADE":
         return None
 
-    size = _size_usdc(decision.edge, max_size)
-    if size < 0.50:
-        log.debug("Order size %.2f USDC < minimum 0.50 — skipping.", size)
+    size = max(_size_usdc(decision.edge, max_size), STATE.min_order_size)
+    if size < STATE.min_order_size:
+        log.debug("Order size %.2f USDC < minimum %.2f — skipping.", size, STATE.min_order_size)
         return None
 
     if decision.signal == "BUY_YES":
@@ -223,6 +256,8 @@ async def _evaluate_market(
                 ts=sr.ts, signal=sr.signal, edge=sr.edge, p_model=sr.p_model,
                 implied_yes=sr.implied_yes, m1=sr.m1, m5=sr.m5, vol1=sr.vol1,
                 size_usdc=size, order_id=order_id, question=sr.question, symbol=sr.symbol,
+                ts_epoch=sr.ts_epoch,
+                expires_epoch=sr.expires_epoch,
             )
 
     return market, decision, size, order_id
@@ -323,7 +358,9 @@ async def trading_loop(
                     ))
             STATE.active_markets = active
 
-            if not markets:
+            if STATE.paused:
+                log.info("PAUSED — skipping evaluation loop.")
+            elif not markets:
                 log.debug("No active 5m crypto markets — waiting.")
             else:
                 tasks = [
@@ -402,6 +439,9 @@ async def main() -> None:
     log.info("  Max size: %.2f USDC", max_size)
     log.info("  Symbol  : %s", sym_filter)
     log.info("  Poll    : %.1fs", poll_interval)
+    log.info("  MinEdge : %.3f", STATE.min_edge)
+    log.info("  MinSize : %.2f USDC", STATE.min_order_size)
+    log.info("  MaxTTE  : %.0fs", STATE.max_time_to_expiry)
     log.info("=" * 60)
 
     # Load wallet address into STATE for the dashboard
@@ -449,11 +489,15 @@ async def main() -> None:
         autotune_loop(),
         name="autotune",
     )
+    remote_task = asyncio.create_task(
+        telegram_loop(),
+        name="telegram-remote",
+    )
 
     await stop_event.wait()
     log.info("Shutting down...")
 
-    for task in (trade_task, wallet_task, tuner_task):
+    for task in (trade_task, wallet_task, tuner_task, remote_task):
         task.cancel()
         try:
             await task

@@ -4,8 +4,10 @@
     "decision.min_edge": 0.02,
     "engine.max_size_usdc": 10.0,
     "engine.poll_interval_sec": 5.0,
+    "engine.min_order_size_usdc": 0.5,
+    "engine.edge_full_scale": 0.05,
+    "risk.max_time_to_expiry_sec": 600.0,
     "tuner.target_trades_per_hour": 12.0,
     "tuner.interval_sec": 30.0
   }
 }
-
