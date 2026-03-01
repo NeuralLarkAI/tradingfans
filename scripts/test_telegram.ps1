@@ -31,6 +31,7 @@ $token = $env:TELEGRAM_BOT_TOKEN
 if (!$token) {
   Write-Host "TELEGRAM_BOT_TOKEN is NOT set."
   Write-Host "Add it to: $envFile"
+  Write-Host "Or run: powershell -ExecutionPolicy Bypass -File C:\\Users\\New\\tradingfans\\scripts\\configure_telegram.ps1"
   Write-Host "Then restart the agent and message the bot: /pair"
   exit 1
 }
