@@ -15,6 +15,10 @@ dist/
 build/
 .eggs/
 
+# TradingFans local runtime config/state
+skills/TradingFans/config/tuner.json
+skills/TradingFans/config/*.tmp
+
 # OS
 .DS_Store
 Thumbs.db

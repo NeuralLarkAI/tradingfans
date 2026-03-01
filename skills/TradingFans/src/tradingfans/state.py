@@ -34,6 +34,7 @@ class ActiveMarket:
 @dataclass
 class SignalRecord:
     ts: str                # HH:MM:SS
+    ts_epoch: float        # unix epoch seconds
     signal: str            # BUY_YES | BUY_NO | NO_TRADE
     edge: float
     p_model: float
@@ -55,6 +56,8 @@ class AgentState:
         self.dry_run: bool = True
         self.max_size: float = 10.0
         self.symbol_filter: str = "BOTH"
+        self.poll_interval: float = 5.0
+        self.min_edge: float = 0.02
 
         # Live spot quotes
         self.btc: SpotQuote | None = None
@@ -78,6 +81,16 @@ class AgentState:
 
         # Raw log lines for the live log panel
         self.log_lines: deque[str] = deque(maxlen=600)
+
+        # Autotuner (bounded self-optimization)
+        self.tuner_enabled: bool = False
+        self.tuner_status: str = "OFF"
+        self.tuner_config_path: str = ""
+        self.tuner_last_run: float | None = None
+        self.tuner_allowlist: list[str] = []
+        self.tuner_params: dict[str, float] = {}
+        self.tuner_specs: list[dict] = []
+        self.tuner_events: deque[dict] = deque(maxlen=250)
 
     def uptime_str(self) -> str:
         secs = int(time.time() - self.started_at)
@@ -117,6 +130,7 @@ class AgentState:
         def trade_dict(s: SignalRecord, mode: str) -> dict:
             return {
                 "ts": s.ts,
+                "ts_epoch": s.ts_epoch,
                 "symbol": s.symbol,
                 "signal": s.signal,
                 "size_usdc": round(s.size_usdc, 2),
@@ -133,6 +147,8 @@ class AgentState:
             "dry_run": self.dry_run,
             "max_size": self.max_size,
             "symbol_filter": self.symbol_filter,
+            "poll_interval": self.poll_interval,
+            "min_edge": self.min_edge,
             "btc": quote(self.btc),
             "eth": quote(self.eth),
             "active_markets": [
@@ -150,6 +166,7 @@ class AgentState:
             "recent_signals": [
                 {
                     "ts": s.ts,
+                    "ts_epoch": s.ts_epoch,
                     "signal": s.signal,
                     "edge": round(s.edge, 4),
                     "p_model": round(s.p_model, 4),
@@ -182,6 +199,17 @@ class AgentState:
                 "address": self.wallet_address,
                 "usdc":    round(self.wallet_usdc, 2)  if self.wallet_usdc  is not None else None,
                 "matic":   round(self.wallet_matic, 4) if self.wallet_matic is not None else None,
+            },
+            # ── Autotuner ───────────────────────────────────────────────
+            "tuner": {
+                "enabled": self.tuner_enabled,
+                "status": self.tuner_status,
+                "config_path": self.tuner_config_path,
+                "last_run_epoch": self.tuner_last_run,
+                "allowlist": list(self.tuner_allowlist),
+                "params": dict(self.tuner_params),
+                "specs": list(self.tuner_specs),
+                "events": list(self.tuner_events),
             },
         }
 

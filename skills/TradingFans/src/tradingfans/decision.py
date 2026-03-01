@@ -118,6 +118,8 @@ def _vol_1m(window: list[tuple[float, float]]) -> float | None:
 def compute(
     window: list[tuple[float, float]],
     implied_yes: float,
+    *,
+    min_edge: float = MIN_EDGE,
 ) -> DecisionResult:
     """
     Compute a trading signal from price history and CLOB implied probability.
@@ -140,9 +142,9 @@ def compute(
     edge    = p_model - implied_yes
 
     # ── Signal ────────────────────────────────────────────────
-    if abs(edge) < MIN_EDGE:
+    if abs(edge) < min_edge:
         signal = "NO_TRADE"
-        reason = f"Edge {edge:+.4f} < threshold {MIN_EDGE}"
+        reason = f"Edge {edge:+.4f} < threshold {min_edge}"
     elif edge > 0:
         signal = "BUY_YES"
         reason = (

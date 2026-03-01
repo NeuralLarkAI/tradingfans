@@ -203,6 +203,8 @@ body::before {
 .tb-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--dim); }
 .tab-btn.tab-live.active { color: var(--green); border-bottom-color: var(--green); }
 .tab-btn.tab-live.active .tb-dot { background: var(--green); box-shadow: 0 0 5px var(--green); }
+.tab-btn.tab-tuner.active { color: var(--orange); border-bottom-color: var(--orange); }
+.tab-btn.tab-tuner.active .tb-dot { background: var(--orange); box-shadow: 0 0 5px var(--orange); }
 #tab-spacer { flex: 1; }
 #tab-meta { display: flex; align-items: center; padding: 0 16px; font-size: 9px; color: var(--dim); gap: 16px; }
 
@@ -238,6 +240,32 @@ body::before {
   background: var(--bg2); border-bottom: 1px solid var(--border);
   font-size: 8px; letter-spacing: 0.16em; color: var(--dim); text-transform: uppercase;
 }
+.tuner-box {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border2);
+}
+.tuner-title { font-size: 9px; letter-spacing: 0.2em; color: var(--dim); text-transform: uppercase; margin-bottom: 6px; }
+.tuner-status { font-size: 14px; font-weight: 700; }
+.tuner-status.on  { color: var(--orange); }
+.tuner-status.off { color: var(--dim); }
+.tuner-meta { margin-top: 4px; font-size: 9px; color: var(--dim); }
+.tuner-grid-hdr, .tuner-grid-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 80px 80px 1fr;
+  gap: 8px; align-items: center;
+  padding: 6px 16px;
+}
+.tuner-grid-hdr {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  font-size: 8px; letter-spacing: 0.16em; color: var(--dim); text-transform: uppercase;
+}
+.tuner-grid-row { border-bottom: 1px solid var(--border); }
+.t-key { color: var(--white2); }
+.t-auto { color: var(--orange); font-weight: 700; font-size: 9px; letter-spacing: 0.12em; }
+.t-dim { color: var(--dim); }
+.t-num { text-align: right; font-weight: 700; }
+.t-reason { color: var(--white2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trade-list { overflow-y: auto; flex: 1; }
 .trade-list::-webkit-scrollbar { width: 2px; }
 .trade-list::-webkit-scrollbar-thumb { background: var(--dim2); }
@@ -377,10 +405,14 @@ body::before {
   <button class="tab-btn tab-live" id="tbtn-live" onclick="switchTab('live')">
     <div class="tb-dot"></div>MAINNET
   </button>
+  <button class="tab-btn tab-tuner" id="tbtn-tuner" onclick="switchTab('tuner')">
+    <div class="tb-dot"></div>TUNER
+  </button>
   <div id="tab-spacer"></div>
   <div id="tab-meta">
     <span id="tmeta-dry">0 trades · $0.00 deployed</span>
     <span id="tmeta-live" style="display:none">0 live trades</span>
+    <span id="tmeta-tuner" style="display:none">Tuner OFF</span>
   </div>
 </div>
 
@@ -480,6 +512,29 @@ body::before {
       </div>
     </div><!-- /panel-live -->
 
+    <!-- ?????? TUNER PANEL ?????? -->
+    <div id="panel-tuner" class="tab-panel">
+      <div class="tuner-box">
+        <div class="tuner-title">Autotuner (bounded self-optimization)</div>
+        <div class="tuner-status off" id="tu-status">OFF</div>
+        <div class="tuner-meta" id="tu-meta">Allowlisted knobs only · bounded changes · persisted to config</div>
+      </div>
+
+      <div class="tuner-grid-hdr">
+        <span>AUTO</span><span>PARAM</span><span class="t-num">MIN</span><span class="t-num">MAX</span><span>CURRENT</span>
+      </div>
+      <div id="tuner-param-list" class="trade-list">
+        <div class="no-data">Waiting for tuner config...</div>
+      </div>
+
+      <div class="tuner-grid-hdr">
+        <span>TIME</span><span>CHANGE</span><span class="t-num">OLD</span><span class="t-num">NEW</span><span>REASON</span>
+      </div>
+      <div id="tuner-event-list" class="trade-list">
+        <div class="no-data">No tuning changes yet</div>
+      </div>
+    </div><!-- /panel-tuner -->
+
   </div><!-- #tab-content -->
 
   <!-- RIGHT: Log (always visible) -->
@@ -509,7 +564,7 @@ const p2   = n => String(Math.floor(Math.max(0, n))).padStart(2, '0');
 // ── Tab switching ──────────────────────────────────────────────
 function switchTab(tab) {
   currentTab = tab;
-  ['dry', 'live'].forEach(t => {
+  ['dry', 'live', 'tuner'].forEach(t => {
     $('tbtn-' + t).classList.toggle('active', t === tab);
     $('panel-' + t).classList.toggle('active', t === tab);
     const meta = $('tmeta-' + t);
@@ -686,6 +741,70 @@ function renderLiveTrades(trades, dryRun) {
 }
 
 // ── Copy wallet address ────────────────────────────────────────
+// Render tuner
+function renderTuner(tuner, dryRun) {
+  const statusEl = $('tu-status');
+  const metaEl   = $('tu-meta');
+  const pEl      = $('tuner-param-list');
+  const eEl      = $('tuner-event-list');
+
+  if (!tuner) {
+    statusEl.textContent = 'OFF';
+    statusEl.className = 'tuner-status off';
+    metaEl.textContent = 'No tuner data available.';
+    pEl.innerHTML = '<div class="no-data">No tuner data</div>';
+    eEl.innerHTML = '<div class="no-data">No tuning changes yet</div>';
+    return;
+  }
+
+  const on = !!tuner.enabled;
+  statusEl.textContent = on ? ('ON' + (dryRun ? ' (DRY RUN)' : ' (LIVE)')) : 'OFF';
+  statusEl.className = 'tuner-status ' + (on ? 'on' : 'off');
+
+  const path = tuner.config_path || '';
+  const last = tuner.last_run_epoch ? new Date(tuner.last_run_epoch*1000).toLocaleTimeString() : '—';
+  metaEl.innerHTML = `Config: <span class="t-dim">${path || '—'}</span> · Last run: <span class="t-dim">${last}</span>`;
+
+  const minEdge = tuner.params?.['decision.min_edge'];
+  $('tmeta-tuner').textContent = on
+    ? `Tuner ON · min_edge=${(minEdge ?? 0).toFixed(3)}`
+    : 'Tuner OFF';
+
+  const specs = tuner.specs || [];
+  const params = tuner.params || {};
+  if (!specs.length) {
+    pEl.innerHTML = '<div class="no-data">No tunable params found</div>';
+  } else {
+    pEl.innerHTML = specs.map(sp => {
+      const cur = params[sp.key];
+      const auto = sp.auto ? '<span class="t-auto">AUTO</span>' : '';
+      return `<div class="tuner-grid-row">
+        <span>${auto}</span>
+        <span class="t-key" title="${sp.description || ''}">${sp.key}</span>
+        <span class="t-num t-dim">${Number(sp.min).toFixed(3)}</span>
+        <span class="t-num t-dim">${Number(sp.max).toFixed(3)}</span>
+        <span class="t-dim">${cur === undefined ? '—' : Number(cur).toFixed(3)}</span>
+      </div>`;
+    }).join('');
+  }
+
+  const evs = tuner.events || [];
+  if (!evs.length) {
+    eEl.innerHTML = '<div class="no-data">No tuning changes yet</div>';
+  } else {
+    eEl.innerHTML = evs.slice(0, 100).map(ev => {
+      const t = ev.ts_epoch ? new Date(ev.ts_epoch*1000).toLocaleTimeString() : '—';
+      return `<div class="tuner-grid-row">
+        <span class="t-dim">${t}</span>
+        <span class="t-key">${ev.key}</span>
+        <span class="t-num">${Number(ev.old).toFixed(3)}</span>
+        <span class="t-num">${Number(ev.new).toFixed(3)}</span>
+        <span class="t-reason" title="${ev.reason || ''}">${ev.reason || ''}</span>
+      </div>`;
+    }).join('');
+  }
+}
+
 function copyWallet() {
   if (!walletAddr) return;
   navigator.clipboard.writeText(walletAddr).then(() => {
@@ -752,6 +871,9 @@ async function poll() {
     // Mainnet tab
     renderWallet(d.wallet, d.dry_run);
     renderLiveTrades(d.live_trades, d.dry_run);
+
+    // Tuner tab
+    renderTuner(d.tuner, d.dry_run);
 
     // Log
     if (d.log_lines && d.log_lines.length > lastLog) {

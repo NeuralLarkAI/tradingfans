@@ -26,6 +26,7 @@ from .risk import RiskCheck, evaluate as risk_evaluate
 from .server import start_server
 from .spot import SpotFeed
 from .state import STATE, ActiveMarket, SignalRecord, SpotQuote
+from .tuner import autotune_loop, init_from_config
 
 # ── Custom log handler → STATE.log_lines ──────────────────────
 
@@ -158,7 +159,7 @@ async def _evaluate_market(
         log.info("RISK FAIL | %s | %s", market.question[:40], " | ".join(rc.reasons))
         return None
 
-    decision = decision_compute(window=window, implied_yes=implied_yes)
+    decision = decision_compute(window=window, implied_yes=implied_yes, min_edge=STATE.min_edge)
 
     log.info(
         "SIGNAL %-8s | tte=%3.0fs | impl=%.3f | model=%.3f | edge=%+.4f | %s",
@@ -170,6 +171,7 @@ async def _evaluate_market(
     STATE.recent_signals.appendleft(
         SignalRecord(
             ts=_hms(),
+            ts_epoch=datetime.datetime.now(tz=datetime.timezone.utc).timestamp(),
             signal=decision.signal,
             edge=decision.edge,
             p_model=decision.p_model,
@@ -285,17 +287,17 @@ async def trading_loop(
     spot: SpotFeed,
     clob: ClobClient,
     llm: LLMAdvisor,
-    max_size: float,
     symbol_filter: str,
 ) -> None:
     loop = asyncio.get_running_loop()
     log.info(
         "Trading loop live | max_size=%.2f USDC | poll=%.1fs | symbol=%s",
-        max_size, POLL_INTERVAL, symbol_filter,
+        STATE.max_size, STATE.poll_interval, symbol_filter,
     )
 
     while True:
         try:
+            max_size = STATE.max_size
             # Update spot state for dashboard
             _update_spot_state(spot)
 
@@ -362,7 +364,7 @@ async def trading_loop(
         except Exception as exc:
             log.error("Trading loop error: %s", exc, exc_info=True)
 
-        await asyncio.sleep(POLL_INTERVAL)
+        await asyncio.sleep(max(0.25, STATE.poll_interval))
 
 
 # ── Entry point ───────────────────────────────────────────────
@@ -384,6 +386,7 @@ async def main() -> None:
         os.environ["POLY_SYMBOL"] = args.symbol
 
     max_size = float(os.environ.get("POLY_MAX_SIZE", str(MAX_SIZE_USDC)))
+    poll_interval = float(os.environ.get("POLY_POLL_INTERVAL", str(POLL_INTERVAL)))
     sym_filter = os.environ.get("POLY_SYMBOL", "both").upper()
     dry = os.environ.get("POLY_DRY_RUN", "0") == "1"
 
@@ -391,17 +394,21 @@ async def main() -> None:
     STATE.dry_run = dry
     STATE.max_size = max_size
     STATE.symbol_filter = sym_filter
+    STATE.poll_interval = poll_interval
 
     log.info("=" * 60)
     log.info("TradingFans v1.0.0  |  Polymarket 5m Crypto Agent")
     log.info("  DRY RUN : %s", dry)
     log.info("  Max size: %.2f USDC", max_size)
     log.info("  Symbol  : %s", sym_filter)
-    log.info("  Poll    : %.1fs", POLL_INTERVAL)
+    log.info("  Poll    : %.1fs", poll_interval)
     log.info("=" * 60)
 
     # Load wallet address into STATE for the dashboard
     STATE.wallet_address = os.environ.get("POLY_FUNDER", "").strip()
+
+    # Load tuner config into STATE (and possibly enable tuning)
+    init_from_config(dry_run=dry)
 
     gamma = GammaCache()
     spot  = SpotFeed()
@@ -431,18 +438,22 @@ async def main() -> None:
     await asyncio.sleep(3.0)
 
     trade_task = asyncio.create_task(
-        trading_loop(gamma, spot, clob, llm, max_size, sym_filter),
+        trading_loop(gamma, spot, clob, llm, sym_filter),
         name="trading-loop",
     )
     wallet_task = asyncio.create_task(
         wallet_poll_loop(),
         name="wallet-poll",
     )
+    tuner_task = asyncio.create_task(
+        autotune_loop(),
+        name="autotune",
+    )
 
     await stop_event.wait()
     log.info("Shutting down...")
 
-    for task in (trade_task, wallet_task):
+    for task in (trade_task, wallet_task, tuner_task):
         task.cancel()
         try:
             await task
