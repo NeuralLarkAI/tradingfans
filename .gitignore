@@ -1,0 +1,25 @@
+.env
+*.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+skills/TradingFans/.venv/
+skills/TradingFans/src/tradingfans/__pycache__/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
