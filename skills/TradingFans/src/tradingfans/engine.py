@@ -308,16 +308,21 @@ async def _evaluate_market(
         log.debug("Order size %.2f USDC < minimum %.2f — skipping.", size, STATE.min_order_size)
         return None
 
+    # Execution price:
+    # - DRY RUN: simulate fills at the implied mid (AMM-like) to avoid pathological CLOB spreads
+    #            in 5m markets (often best_bid≈0.01 / best_ask≈0.99).
+    # - LIVE:    use best_ask on the relevant token (and rely on risk spread/depth checks).
     if decision.signal == "BUY_YES":
         token_id = market.yes_token_id
-        price = book.best_ask if book.best_ask else implied_yes
+        price = float(implied_yes) if STATE.dry_run else float(book.best_ask if book.best_ask else implied_yes)
     else:
         token_id = market.no_token_id
-        # For NO, use the NO-token book when possible. Using (1 - YES best_bid) is not reliable
-        # in sparse books (common in 5m markets) and can create nonsense prices like 0.99.
-        book_no = await loop.run_in_executor(None, clob.get_book, token_id)
         implied_no = 1.0 - implied_yes
-        price = (book_no.best_ask if (book_no and book_no.best_ask) else implied_no)
+        if STATE.dry_run:
+            price = float(implied_no)
+        else:
+            book_no = await loop.run_in_executor(None, clob.get_book, token_id)
+            price = float(book_no.best_ask if (book_no and book_no.best_ask) else implied_no)
         price = max(0.01, min(float(price), 0.99))
 
     log.info(
