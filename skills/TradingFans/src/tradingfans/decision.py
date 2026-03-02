@@ -120,6 +120,9 @@ def compute(
     implied_yes: float,
     *,
     min_edge: float = MIN_EDGE,
+    w_m1: float = W_M1,
+    w_m5: float = W_M5,
+    w_vol: float = W_VOL,
 ) -> DecisionResult:
     """
     Compute a trading signal from price history and CLOB implied probability.
@@ -137,7 +140,7 @@ def compute(
     vol1 = _vol_1m(window)          or 0.0
 
     # ── Logistic model ────────────────────────────────────────
-    logit   = W_M1 * m1 + W_M5 * m5 + W_VOL * vol1
+    logit   = w_m1 * m1 + w_m5 * m5 + w_vol * vol1
     p_model = _sigmoid(logit)
     edge    = p_model - implied_yes
 

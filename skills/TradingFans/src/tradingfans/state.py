@@ -78,6 +78,7 @@ class AgentState:
 
         # Dry-run portfolio tracking
         self.dry_deployed: float = 0.0   # running total USDC committed in dry-run
+        self.dry_realized_pnl: float = 0.0
 
         # Mainnet wallet
         self.wallet_address: str = ""
@@ -96,6 +97,16 @@ class AgentState:
         self.tuner_params: dict[str, float] = {}
         self.tuner_specs: list[dict] = []
         self.tuner_events: deque[dict] = deque(maxlen=250)
+
+        # Strategy + performance tracking
+        self.strategy: dict = {
+            "name": "momentum",
+            "w_m1": 20.0,
+            "w_m5": 8.0,
+            "w_vol": -4.0,
+        }
+        self.open_trades: dict[str, dict] = {}
+        self.resolved_trades: deque[dict] = deque(maxlen=500)
 
         # Remote control (e.g., Telegram)
         self.remote: dict = {
@@ -141,7 +152,7 @@ class AgentState:
 
         exp_pnl = sum(abs(s.edge) * s.size_usdc for s in dry_trades)
         deployed = self.dry_deployed
-        available = max(0.0, self.DRY_START_BALANCE - deployed)
+        available = self.DRY_START_BALANCE + self.dry_realized_pnl - deployed
 
         def trade_dict(s: SignalRecord, mode: str) -> dict:
             now = time.time()
@@ -215,6 +226,7 @@ class AgentState:
                 "deployed": round(deployed, 2),
                 "available": round(available, 2),
                 "exp_pnl":  round(exp_pnl, 2),
+                "realized_pnl": round(self.dry_realized_pnl, 2),
                 "trade_count": len(dry_trades),
             },
             "dry_trades":  [trade_dict(s, "DRY")  for s in dry_trades[:100]],
@@ -235,6 +247,11 @@ class AgentState:
                 "params": dict(self.tuner_params),
                 "specs": list(self.tuner_specs),
                 "events": list(self.tuner_events),
+            },
+            "strategy": dict(self.strategy),
+            "performance": {
+                "open_trades": len(self.open_trades),
+                "resolved_trades": list(self.resolved_trades)[:200],
             },
             "remote": dict(self.remote),
         }

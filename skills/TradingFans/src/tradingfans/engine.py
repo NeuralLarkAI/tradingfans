@@ -17,6 +17,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+import time
 from collections import deque
 
 from .clob import ClobClient, check_depth
@@ -29,6 +30,8 @@ from .spot import SpotFeed
 from .state import STATE, ActiveMarket, SignalRecord, SpotQuote
 from .tuner import autotune_loop, init_from_config
 from .telegram_remote import telegram_loop
+from .performance import OpenTrade, record_open_trade, resolve_due_trades
+from .strategy import PRESETS, pick_strategy
 
 # ── Custom log handler → STATE.log_lines ──────────────────────
 
@@ -226,7 +229,14 @@ async def _evaluate_market(
         log.info("RISK FAIL | %s | %s", market.question[:40], " | ".join(rc.reasons))
         return None
 
-    decision = decision_compute(window=window, implied_yes=implied_yes, min_edge=STATE.min_edge)
+    decision = decision_compute(
+        window=window,
+        implied_yes=implied_yes,
+        min_edge=STATE.min_edge,
+        w_m1=float(STATE.strategy.get("w_m1", 20.0)),
+        w_m5=float(STATE.strategy.get("w_m5", 8.0)),
+        w_vol=float(STATE.strategy.get("w_vol", -4.0)),
+    )
 
     log.info(
         "SIGNAL %-8s | tte=%3.0fs | impl=%.3f | model=%.3f | edge=%+.4f | %s",
@@ -284,6 +294,17 @@ async def _evaluate_market(
         STATE.trade_count += 1
         if STATE.dry_run:
             STATE.dry_deployed += size   # track virtual capital committed
+            # Track trade for later resolution / realized PnL
+            record_open_trade(OpenTrade(
+                market_id=market.market_id,
+                question=market.question,
+                symbol=symbol,
+                side=decision.signal,
+                size_usdc=size,
+                price_paid=price,
+                entry_epoch=time.time(),
+                end_epoch=market.end_time.timestamp(),
+            ))
         # Update the last signal record with the real order_id
         if STATE.recent_signals:
             sr = STATE.recent_signals[0]
@@ -370,6 +391,29 @@ async def trading_loop(
             max_size = STATE.max_size
             # Update spot state for dashboard
             _update_spot_state(spot)
+
+            # Resolve any finished trades and update realized performance
+            resolve_due_trades(spot)
+
+            # Strategy selection (bounded presets based on realized outcomes)
+            last = list(STATE.resolved_trades)[:20]
+            current = str(STATE.strategy.get("name", "momentum"))
+            nxt = pick_strategy(current=current, last_n=last)
+            if nxt != current and nxt in PRESETS:
+                p = PRESETS[nxt]
+                STATE.strategy = {"name": p.name, "w_m1": p.w_m1, "w_m5": p.w_m5, "w_vol": p.w_vol}
+                # Strategy change is a meaningful event; surface it via tuner events too
+                try:
+                    STATE.tuner_events.appendleft({
+                        "ts_epoch": time.time(),
+                        "key": "strategy",
+                        "old": current,
+                        "new": nxt,
+                        "reason": "performance_switch",
+                        "metrics": {"resolved": len(last)},
+                    })
+                except Exception:
+                    pass
 
             markets = await gamma.active_markets()
             STATE.scan_count += 1
@@ -485,6 +529,12 @@ async def main() -> None:
 
     # Load tuner config into STATE (and possibly enable tuning)
     init_from_config(dry_run=dry)
+
+    # Initialize strategy preset
+    preset_name = os.environ.get("POLY_STRATEGY", "").strip() or str(STATE.strategy.get("name", "momentum"))
+    if preset_name in PRESETS:
+        p = PRESETS[preset_name]
+        STATE.strategy = {"name": p.name, "w_m1": p.w_m1, "w_m5": p.w_m5, "w_vol": p.w_vol}
 
     gamma = GammaCache()
     spot  = SpotFeed()

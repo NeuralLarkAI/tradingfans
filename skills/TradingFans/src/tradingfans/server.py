@@ -897,6 +897,11 @@ async function poll() {
     $('st-sigs').textContent   = d.recent_signals ? d.recent_signals.length : 0;
     $('st-trades').textContent = d.trade_count;
 
+    // Strategy (show in tuner meta line)
+    if (d.strategy && d.strategy.name) {
+      $('tmeta-tuner').textContent = `Tuner ${d.tuner?.enabled ? 'ON' : 'OFF'} · strat=${d.strategy.name}`;
+    }
+
     // Markets
     renderMarkets(d.active_markets);
 
