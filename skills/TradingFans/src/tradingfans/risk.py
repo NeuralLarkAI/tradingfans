@@ -5,7 +5,7 @@ ALL guardrails must pass before an order can be submitted.
 This is the last line of defense before capital is committed.
 
 Guardrails (in evaluation order):
-  1. time_to_expiry must be in (0, 600) seconds
+  1. time_to_expiry must be in (0, max_time_to_expiry) seconds
   2. Spot price must be fresh (last tick ≤ STALE_THRESHOLD ago)
   3. Order book must be available  [skipped in dry-run]
   4. Spread ≤ 3%                   [skipped in dry-run]
@@ -31,7 +31,7 @@ from .clob import OrderBook, check_depth, check_spread
 
 # ── Thresholds ────────────────────────────────────────────────
 MIN_TIME_TO_EXPIRY = 0.0    # seconds (must be > 0, i.e., not expired)
-MAX_TIME_TO_EXPIRY = 600.0  # seconds (10-minute cap)
+MAX_TIME_TO_EXPIRY = 900.0  # seconds (15-minute cap)
 
 
 # ── Result ────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ def evaluate(
     dry_run = os.environ.get("POLY_DRY_RUN", "0") == "1"
     rc = RiskCheck()
 
-    # 1. Time filter: only trade in the final 10 minutes before expiry
+    # 1. Time filter: only trade shortly before expiry
     if not (MIN_TIME_TO_EXPIRY < time_to_expiry < max_time_to_expiry):
         rc.fail(
             f"time_to_expiry={time_to_expiry:.1f}s not in "

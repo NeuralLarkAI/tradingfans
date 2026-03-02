@@ -42,8 +42,30 @@ STREAMS: dict[str, str] = {
     "ETH": "ethusdt@aggTrade",
 }
 
-# Coinbase symbols
-COINBASE_SYMBOLS: dict[str, str] = {"BTC": "BTC", "ETH": "ETH"}
+# Coinbase symbols (REST fallback and multi-asset support).
+# Note: Some assets may not have Binance-US WS streams available; REST still works.
+COINBASE_SYMBOLS: dict[str, str] = {
+    "BTC": "BTC",
+    "ETH": "ETH",
+    "SOL": "SOL",
+    "XRP": "XRP",
+    "ADA": "ADA",
+    "DOGE": "DOGE",
+    "AVAX": "AVAX",
+    "LINK": "LINK",
+    "MATIC": "MATIC",
+    "DOT": "DOT",
+    "LTC": "LTC",
+    "BCH": "BCH",
+    "ATOM": "ATOM",
+    "UNI": "UNI",
+    "AAVE": "AAVE",
+    "ETC": "ETC",
+    "XLM": "XLM",
+    "ALGO": "ALGO",
+    "NEAR": "NEAR",
+    "FIL": "FIL",
+}
 
 WINDOW_SECONDS    = 300    # 5-minute rolling window
 STALE_THRESHOLD   = 15.0  # seconds before spot is considered stale
@@ -55,13 +77,15 @@ class SpotFeed:
     """Spot price feed: Binance WebSocket + Coinbase REST fallback."""
 
     def __init__(self) -> None:
-        self._windows: dict[str, Deque[tuple[float, float]]] = {
-            sym: deque() for sym in STREAMS
-        }
-        self._last_tick: dict[str, float] = {sym: 0.0 for sym in STREAMS}
+        syms = sorted(set(STREAMS.keys()) | set(COINBASE_SYMBOLS.keys()))
+        self._windows: dict[str, Deque[tuple[float, float]]] = {sym: deque() for sym in syms}
+        self._last_tick: dict[str, float] = {sym: 0.0 for sym in syms}
         self._ws_task:   asyncio.Task | None = None
         self._rest_task: asyncio.Task | None = None
         self._running = False
+
+    def supported_symbols(self) -> list[str]:
+        return sorted(self._windows.keys())
 
     # ── Public API ────────────────────────────────────────────
 
@@ -197,7 +221,7 @@ class SpotFeed:
     def _record(self, symbol: str, price: float) -> None:
         """Add a price tick to the rolling window."""
         ts = time.monotonic()
-        dq = self._windows[symbol]
+        dq = self._windows.setdefault(symbol, deque())
         dq.append((ts, price))
         self._last_tick[symbol] = ts
 

@@ -92,11 +92,11 @@ SPECS: dict[str, ParamSpec] = {
     ),
     "risk.max_time_to_expiry_sec": ParamSpec(
         key="risk.max_time_to_expiry_sec",
-        default=600.0,
+        default=900.0,
         min_v=300.0,
-        max_v=7200.0,
-        step=300.0,
-        description="Maximum seconds-to-expiry allowed (risk time filter).",
+        max_v=900.0,
+        step=60.0,
+        description="Maximum seconds-to-expiry allowed (risk time filter, final window).",
         live_allowed=False,
     ),
     "tuner.target_trades_per_hour": ParamSpec(
@@ -189,7 +189,7 @@ def init_from_config(*, dry_run: bool) -> None:
             elif dry_run and key == "engine.max_size_usdc":
                 raw = 25.0
             elif dry_run and key == "risk.max_time_to_expiry_sec":
-                raw = 7200.0
+                raw = 900.0
             else:
                 raw = spec.default
         return spec.quantize(raw)

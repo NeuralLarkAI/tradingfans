@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 import time
 from collections import deque
+import re
 
 from .clob import ClobClient, check_depth
 from .decision import DecisionResult, compute as decision_compute
@@ -110,12 +111,45 @@ _decision_log: deque[dict] = deque(maxlen=200)
 
 # ── Helpers ───────────────────────────────────────────────────
 
-def _detect_symbol(market: Market) -> str | None:
+_SYMBOL_ALIASES: dict[str, tuple[str, ...]] = {
+    "BTC": ("bitcoin",),
+    "ETH": ("ethereum",),
+    "SOL": ("solana",),
+    "XRP": ("ripple",),
+    "ADA": ("cardano",),
+    "DOGE": ("dogecoin",),
+    "AVAX": ("avalanche",),
+    "LINK": ("chainlink",),
+    "MATIC": ("polygon",),
+    "DOT": ("polkadot",),
+    "LTC": ("litecoin",),
+    "BCH": ("bitcoin cash",),
+    "ATOM": ("cosmos",),
+    "UNI": ("uniswap",),
+    "AAVE": ("aave",),
+    "ETC": ("ethereum classic",),
+    "XLM": ("stellar",),
+    "ALGO": ("algorand",),
+    "NEAR": ("near", "near protocol"),
+    "FIL": ("filecoin",),
+}
+
+
+def _detect_symbol(market: Market, *, supported: set[str]) -> str | None:
     text = (market.question + " " + market.slug).lower()
-    if "btc" in text or "bitcoin" in text:
-        return "BTC"
-    if "eth" in text or "ethereum" in text:
-        return "ETH"
+
+    # Prefer tickers present as whole words.
+    for sym in sorted(supported, key=len, reverse=True):
+        if re.search(rf"\\b{re.escape(sym.lower())}\\b", text):
+            return sym
+
+    # Fall back to name aliases.
+    for sym, aliases in _SYMBOL_ALIASES.items():
+        if sym not in supported:
+            continue
+        for a in aliases:
+            if a in text:
+                return sym
     return None
 
 
@@ -204,10 +238,11 @@ async def _evaluate_market(
     if market.market_id in _open_positions:
         return None
 
-    symbol = _detect_symbol(market)
+    supported = set(spot.supported_symbols())
+    symbol = _detect_symbol(market, supported=supported)
     if symbol is None:
         return None
-    if symbol_filter not in ("BOTH", symbol):
+    if symbol_filter not in ("BOTH", "ALL", symbol):
         return None
 
     spot_fresh = spot.is_fresh(symbol)
@@ -420,9 +455,12 @@ async def trading_loop(
 
             # Build active-market records for dashboard
             active: list[ActiveMarket] = []
+            max_tte = float(STATE.max_time_to_expiry or 900.0)
             for m in markets:
-                sym = _detect_symbol(m)
+                sym = _detect_symbol(m, supported=set(spot.supported_symbols()))
                 if sym is None:
+                    continue
+                if not (0.0 < m.time_to_expiry < max_tte):
                     continue
                 book = await loop.run_in_executor(None, clob.get_book, m.yes_token_id)
                 if book:
@@ -442,6 +480,9 @@ async def trading_loop(
             elif not markets:
                 log.debug("No active 5m crypto markets — waiting.")
             else:
+                # Only evaluate markets in the configured time window.
+                max_tte = float(STATE.max_time_to_expiry or 900.0)
+                markets = [m for m in markets if 0.0 < m.time_to_expiry < max_tte]
                 tasks = [
                     _evaluate_market(m, spot, clob, max_size, symbol_filter, loop)
                     for m in markets
@@ -492,7 +533,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="TradingFans — Polymarket 5m crypto agent")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-size", type=float, default=None, metavar="USDC")
-    parser.add_argument("--symbol", choices=["BTC", "ETH", "both"], default=None)
+    parser.add_argument("--symbol", choices=["BTC", "ETH", "both", "all"], default=None)
     args = parser.parse_args()
 
     if args.dry_run:
@@ -504,7 +545,9 @@ async def main() -> None:
 
     max_size = float(os.environ.get("POLY_MAX_SIZE", str(MAX_SIZE_USDC)))
     poll_interval = float(os.environ.get("POLY_POLL_INTERVAL", str(POLL_INTERVAL)))
-    sym_filter = os.environ.get("POLY_SYMBOL", "both").upper()
+    sym_filter = os.environ.get("POLY_SYMBOL", "all").upper()
+    if sym_filter == "BOTH":
+        sym_filter = "ALL"
     dry = os.environ.get("POLY_DRY_RUN", "0") == "1"
 
     # Populate STATE config fields

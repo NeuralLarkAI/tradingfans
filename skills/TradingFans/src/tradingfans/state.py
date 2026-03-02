@@ -57,12 +57,12 @@ class AgentState:
         self.dry_run: bool = True
         self.paused: bool = False
         self.max_size: float = 10.0
-        self.symbol_filter: str = "BOTH"
+        self.symbol_filter: str = "ALL"
         self.poll_interval: float = 5.0
         self.min_edge: float = 0.02
         self.min_order_size: float = 5.00
         self.edge_full_scale: float = 0.05
-        self.max_time_to_expiry: float = 600.0
+        self.max_time_to_expiry: float = 900.0
 
         # Live spot quotes
         self.btc: SpotQuote | None = None
