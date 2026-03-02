@@ -99,7 +99,7 @@ def resolve_due_trades(spot: SpotFeed) -> None:
         if ret is None:
             # Retry briefly while end_epoch is still inside our rolling window.
             # If still missing after a grace period, drop as UNRESOLVED so open trades don't stick forever.
-            if now < end_epoch + 120.0:
+            if now < end_epoch + 30.0:
                 STATE.open_trades[mid] = t
                 continue
 

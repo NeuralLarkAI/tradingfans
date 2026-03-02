@@ -270,6 +270,29 @@ body::before {
 .trade-list { overflow-y: auto; flex: 1; min-height: 0; }
 .trade-list::-webkit-scrollbar { width: 2px; }
 .trade-list::-webkit-scrollbar-thumb { background: var(--dim2); }
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  padding: 10px 16px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.chart-card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 10px 10px 8px 10px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.chart-hdr { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
+.chart-sym { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--white2); }
+.chart-meta { font-size: 9px; color: var(--dim); }
+.chart-svg { width: 100%; height: 88px; display: block; }
+.chart-line { fill: none; stroke: var(--white2); stroke-width: 1.6; opacity: 0.9; }
+.chart-fill { fill: rgba(255,255,255,0.06); stroke: none; }
+.chart-axis { stroke: var(--border2); stroke-width: 1; opacity: 0.7; }
 .trade-row {
   display: grid; grid-template-columns: 50px 52px 34px 68px 58px 52px 56px 1fr;
   gap: 8px; align-items: center;
@@ -405,6 +428,9 @@ body::before {
   <button class="tab-btn active" id="tbtn-dry" onclick="switchTab('dry')">
     <div class="tb-dot"></div>DRY RUN · $10K
   </button>
+  <button class="tab-btn" id="tbtn-charts" onclick="switchTab('charts')">
+    <div class="tb-dot"></div>CHARTS
+  </button>
   <button class="tab-btn" id="tbtn-history" onclick="switchTab('history')">
     <div class="tb-dot"></div>HISTORY
   </button>
@@ -417,6 +443,7 @@ body::before {
   <div id="tab-spacer"></div>
   <div id="tab-meta">
     <span id="tmeta-dry">0 trades · $0.00 deployed</span>
+    <span id="tmeta-charts" style="display:none">0 symbols</span>
     <span id="tmeta-history" style="display:none">0 resolved</span>
     <span id="tmeta-live" style="display:none">0 live trades</span>
     <span id="tmeta-tuner" style="display:none">Tuner OFF</span>
@@ -475,6 +502,15 @@ body::before {
         <div class="no-data">No open trades — waiting for signals near expiry</div>
       </div>
     </div><!-- /panel-dry -->
+
+    <!-- ══ CHARTS PANEL ══ -->
+    <div id="panel-charts" class="tab-panel">
+      <div class="sec-hdr">
+        <span class="sec-title">Spot Charts</span>
+        <span class="sec-meta" id="charts-meta">—</span>
+      </div>
+      <div id="chart-grid" class="chart-grid"></div>
+    </div><!-- /panel-charts -->
 
     <!-- ══ HISTORY PANEL ══ -->
     <div id="panel-history" class="tab-panel">
@@ -619,7 +655,7 @@ const fmtTte = sec => {
 // ── Tab switching ──────────────────────────────────────────────
 function switchTab(tab) {
   currentTab = tab;
-  ['dry', 'history', 'live', 'tuner'].forEach(t => {
+  ['dry', 'charts', 'history', 'live', 'tuner'].forEach(t => {
     $('tbtn-' + t).classList.toggle('active', t === tab);
     $('panel-' + t).classList.toggle('active', t === tab);
     const meta = $('tmeta-' + t);
@@ -767,6 +803,62 @@ function renderHistory(trades) {
       <span class="t-oid">${esc(String(t.question || ''))}</span>
     </div>`;
   }).join('');
+}
+
+function renderCharts(state) {
+  const grid = $('chart-grid');
+  if (!grid) return;
+
+  const series = state?.spot_series || {};
+  const syms = new Set();
+
+  (state.active_markets || []).forEach(m => { if (m && m.symbol) syms.add(String(m.symbol)); });
+  (state.performance?.open_trades || []).forEach(t => { if (t && t.symbol) syms.add(String(t.symbol)); });
+  ['BTC','ETH'].forEach(s => { if (series[s]) syms.add(s); });
+
+  const list = Array.from(syms).filter(s => series[s] && series[s].length >= 2).sort();
+  $('tmeta-charts').textContent = `${list.length} symbol${list.length!==1?'s':''}`;
+  const cm = $('charts-meta');
+  if (cm) cm.textContent = `${list.length} symbol${list.length!==1?'s':''} · ${Object.keys(series).length} total in feed`;
+
+  if (!list.length) {
+    grid.innerHTML = '<div class="no-data" style="padding:10px 16px">No chart data yet.</div>';
+    return;
+  }
+
+  const card = (sym, pts) => {
+    const xs = pts.map(p => Number(p[0] || 0));
+    const ys = pts.map(p => Number(p[1] || 0));
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    let y0 = Math.min(...ys), y1 = Math.max(...ys);
+    if (!isFinite(y0) || !isFinite(y1) || y0 === y1) { y0 -= 1; y1 += 1; }
+    const pad = (y1 - y0) * 0.05;
+    y0 -= pad; y1 += pad;
+
+    const W = 300, H = 88, P = 6;
+    const nx = t => (P + (Math.max(0, Math.min(1, (t - x0) / Math.max(1, (x1 - x0)))) * (W - 2*P)));
+    const ny = p => (P + (1 - Math.max(0, Math.min(1, (p - y0) / Math.max(1e-9, (y1 - y0))))) * (H - 2*P));
+
+    const pl = pts.map(p => `${nx(Number(p[0]||0)).toFixed(1)},${ny(Number(p[1]||0)).toFixed(1)}`).join(' ');
+    const first = ys[0], last = ys[ys.length - 1];
+    const chg = (first && isFinite(first)) ? ((last/first - 1) * 100) : 0;
+    const meta = `$${fmt(last, last>999?0:2)} · ${chg>=0?'+':''}${chg.toFixed(2)}%`;
+
+    const fillPts = `${P},${H-P} ${pl} ${W-P},${H-P}`;
+    return `<div class="chart-card">
+      <div class="chart-hdr">
+        <div class="chart-sym">${esc(sym)}</div>
+        <div class="chart-meta">${esc(meta)}</div>
+      </div>
+      <svg class="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <line class="chart-axis" x1="${P}" y1="${H-P}" x2="${W-P}" y2="${H-P}"></line>
+        <polyline class="chart-fill" points="${fillPts}"></polyline>
+        <polyline class="chart-line" points="${pl}"></polyline>
+      </svg>
+    </div>`;
+  };
+
+  grid.innerHTML = list.map(sym => card(sym, series[sym])).join('');
 }
 
 // ── Render wallet card ─────────────────────────────────────────
@@ -1003,6 +1095,9 @@ async function poll() {
 
     // Markets
     renderMarkets(d.active_markets, d.max_time_to_expiry);
+
+    // Charts tab
+    renderCharts(d);
 
     // Dry run tab (open positions only)
     renderDryBalance(d.dry_balance);

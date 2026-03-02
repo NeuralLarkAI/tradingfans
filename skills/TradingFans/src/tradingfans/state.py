@@ -68,6 +68,8 @@ class AgentState:
         # Live spot quotes
         self.btc: SpotQuote | None = None
         self.eth: SpotQuote | None = None
+        # Downsampled spot series for dashboard charts: symbol -> list[(epoch_ts, price)]
+        self.spot_series: dict[str, list[tuple[float, float]]] = {}
 
         # Active markets currently in the scan window
         self.active_markets: list[ActiveMarket] = []
@@ -175,6 +177,21 @@ class AgentState:
                 "mode": mode,
             }
 
+        # Spot series for charts: only include relevant symbols to keep payload small.
+        chart_syms: set[str] = {"BTC", "ETH"}
+        try:
+            chart_syms |= {m.symbol for m in self.active_markets if getattr(m, "symbol", None)}
+            chart_syms |= {str(t.get("symbol")) for t in self.open_trades.values() if t.get("symbol")}
+        except Exception:
+            pass
+
+        spot_series_out: dict[str, list[list[float]]] = {}
+        for sym in sorted(chart_syms):
+            pts = self.spot_series.get(sym) or []
+            # Serialize as compact [ts, price] pairs; cap points.
+            pts = pts[-220:]
+            spot_series_out[sym] = [[float(ts), float(px)] for ts, px in pts]
+
         return {
             "uptime": self.uptime_str(),
             "dry_run": self.dry_run,
@@ -188,6 +205,7 @@ class AgentState:
             "max_time_to_expiry": self.max_time_to_expiry,
             "btc": quote(self.btc),
             "eth": quote(self.eth),
+            "spot_series": spot_series_out,
             "active_markets": [
                 {
                     "market_id": m.market_id[:16],

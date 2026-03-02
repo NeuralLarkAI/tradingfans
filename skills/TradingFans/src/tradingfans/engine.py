@@ -196,6 +196,18 @@ def _update_spot_state(spot: SpotFeed) -> None:
         else:
             STATE.eth = q
 
+    # Downsampled spot series for charting (symbols we can actually quote).
+    try:
+        for sym in spot.supported_symbols():
+            w = spot.window(sym)
+            if not w:
+                continue
+            # Downsample to <= ~180 points to keep /api/state light.
+            step = max(1, int(len(w) / 180))
+            STATE.spot_series[sym] = w[::step]
+    except Exception:
+        pass
+
 
 async def _wait_for_spot_history(spot: SpotFeed, *, symbols: list[str], min_age_sec: float = 60.0, timeout_sec: float = 90.0) -> None:
     """
@@ -247,6 +259,10 @@ async def _evaluate_market(
 
     spot_fresh = spot.is_fresh(symbol)
     window = spot.window(symbol)
+    # Require enough history for 5m features + expiry resolution.
+    if not window or (window[-1][0] - window[0][0]) < 305.0:
+        log.info("RISK FAIL | %s | spot_history<5m", market.question[:40])
+        return None
 
     book = await loop.run_in_executor(None, clob.get_book, market.yes_token_id)
 
@@ -650,7 +666,7 @@ async def main() -> None:
     await spot.start()
     await llm.start()
 
-    log.info("Warming up spot feed (3s)...")
+    log.info("Spot feed started — accumulating 5m history before trading...")
     await asyncio.sleep(3.0)
 
     trade_task = asyncio.create_task(
