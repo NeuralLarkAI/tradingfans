@@ -10,7 +10,7 @@ Public API:
     feed = SpotFeed()
     await feed.start()
 
-    window = feed.window("BTC")      # list[(monotonic_ts, price)] last 5 min
+    window = feed.window("BTC")      # list[(epoch_ts, price)] last 5 min
     fresh  = feed.is_fresh("BTC")    # True if last tick was ≤ STALE_THRESHOLD ago
     price  = feed.latest_price("BTC")
 """
@@ -91,10 +91,10 @@ class SpotFeed:
 
     def window(self, symbol: str) -> list[tuple[float, float]]:
         """
-        Return a snapshot of (monotonic_ts, price) pairs within the last 5 minutes.
+        Return a snapshot of (epoch_ts, price) pairs within the last 5 minutes.
         Result is a plain list — safe to iterate without holding any lock.
         """
-        now = time.monotonic()
+        now = time.time()
         cutoff = now - WINDOW_SECONDS
         dq = self._windows.get(symbol.upper(), deque())
         return [(ts, px) for ts, px in dq if ts >= cutoff]
@@ -102,12 +102,26 @@ class SpotFeed:
     def is_fresh(self, symbol: str) -> bool:
         """Return True if we received a tick within STALE_THRESHOLD seconds."""
         last = self._last_tick.get(symbol.upper(), 0.0)
-        return (time.monotonic() - last) <= STALE_THRESHOLD
+        return (time.time() - last) <= STALE_THRESHOLD
 
     def latest_price(self, symbol: str) -> float | None:
         """Most recent price for the symbol, or None if no data."""
         w = self.window(symbol)
         return w[-1][1] if w else None
+
+    def price_at(self, symbol: str, epoch_ts: float, *, max_lookback_sec: float = 900.0) -> float | None:
+        """
+        Best-effort price lookup at or before epoch_ts.
+        Returns None if we don't have a tick within max_lookback_sec.
+        """
+        dq = self._windows.get(symbol.upper())
+        if not dq:
+            return None
+        lo = float(epoch_ts) - float(max_lookback_sec)
+        for ts, px in reversed(dq):
+            if ts <= epoch_ts:
+                return px if ts >= lo else None
+        return None
 
     # ── Lifecycle ─────────────────────────────────────────────
 
@@ -220,7 +234,7 @@ class SpotFeed:
 
     def _record(self, symbol: str, price: float) -> None:
         """Add a price tick to the rolling window."""
-        ts = time.monotonic()
+        ts = time.time()
         dq = self._windows.setdefault(symbol, deque())
         dq.append((ts, price))
         self._last_tick[symbol] = ts

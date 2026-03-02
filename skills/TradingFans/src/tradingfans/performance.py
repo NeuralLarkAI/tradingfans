@@ -54,20 +54,16 @@ def _pnl_usdc(*, side: str, size_usdc: float, price_paid: float, outcome_up: boo
     return float(size_usdc) * (1.0 / p - 1.0)
 
 
-def _spot_return_over_last_5m(spot: SpotFeed, symbol: str) -> float | None:
-    w = spot.window(symbol)
-    if len(w) < 2:
+def _spot_return_window(spot: SpotFeed, symbol: str, *, end_epoch: float) -> float | None:
+    """
+    Return spot return over the 5-minute window ending at end_epoch:
+      ret = price(end_epoch) / price(end_epoch - 300) - 1
+    """
+    px_end = spot.price_at(symbol, end_epoch, max_lookback_sec=900.0)
+    px_start = spot.price_at(symbol, end_epoch - 300.0, max_lookback_sec=900.0)
+    if px_end is None or px_start is None or px_start <= 0:
         return None
-    now_ts, px_now = w[-1]
-    cutoff = now_ts - 300.0
-    px_old = None
-    for ts, px in reversed(w):
-        if ts <= cutoff:
-            px_old = px
-            break
-    if px_old is None or px_old <= 0:
-        return None
-    return (px_now - px_old) / px_old
+    return (float(px_end) - float(px_start)) / float(px_start)
 
 
 def resolve_due_trades(spot: SpotFeed) -> None:
@@ -81,10 +77,31 @@ def resolve_due_trades(spot: SpotFeed) -> None:
         if not t:
             continue
 
-        ret = _spot_return_over_last_5m(spot, t["symbol"])
+        end_epoch = float(t.get("end_epoch", 0.0))
+        ret = _spot_return_window(spot, t["symbol"], end_epoch=end_epoch)
         if ret is None:
-            # If we can't compute, keep it open and retry.
-            STATE.open_trades[mid] = t
+            # Retry briefly while end_epoch is still inside our rolling window.
+            # If still missing after a grace period, drop as UNRESOLVED so open trades don't stick forever.
+            if now < end_epoch + 120.0:
+                STATE.open_trades[mid] = t
+                continue
+
+            if STATE.dry_run:
+                STATE.dry_deployed = max(0.0, STATE.dry_deployed - float(t["size_usdc"]))
+
+            STATE.resolved_trades.appendleft({
+                "ts_epoch": now,
+                "market_id": t["market_id"][:16],
+                "symbol": t["symbol"],
+                "side": t["side"],
+                "size_usdc": round(float(t["size_usdc"]), 2),
+                "price_paid": round(float(t["price_paid"]), 4),
+                "outcome": "UNK",
+                "spot_ret_5m_pct": None,
+                "pnl_usdc": 0.0,
+                "question": t["question"][:120],
+                "note": "unresolved_missing_spot_history",
+            })
             continue
 
         outcome_up = ret > 0
@@ -112,4 +129,3 @@ def resolve_due_trades(spot: SpotFeed) -> None:
             "pnl_usdc": round(pnl, 2),
             "question": t["question"][:120],
         })
-
