@@ -60,7 +60,7 @@ class AgentState:
         self.symbol_filter: str = "BOTH"
         self.poll_interval: float = 5.0
         self.min_edge: float = 0.02
-        self.min_order_size: float = 0.50
+        self.min_order_size: float = 5.00
         self.edge_full_scale: float = 0.05
         self.max_time_to_expiry: float = 600.0
 
@@ -118,6 +118,7 @@ class AgentState:
                 "last_error": "",
             }
         }
+        self.remote_events: deque[dict] = deque(maxlen=250)
 
     def uptime_str(self) -> str:
         secs = int(time.time() - self.started_at)
@@ -254,6 +255,7 @@ class AgentState:
                 "resolved_trades": list(self.resolved_trades)[:200],
             },
             "remote": dict(self.remote),
+            "remote_events": list(self.remote_events),
         }
 
 

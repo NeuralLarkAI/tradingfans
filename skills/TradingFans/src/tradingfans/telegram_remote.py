@@ -35,6 +35,18 @@ def _api_base(token: str) -> str:
     return f"https://api.telegram.org/bot{token}"
 
 
+def _log_remote_event(kind: str, detail: str, *, chat_id: int | None = None) -> None:
+    try:
+        STATE.remote_events.appendleft({
+            "ts_epoch": time.time(),
+            "kind": kind,
+            "detail": detail[:200],
+            "chat_id": int(chat_id) if isinstance(chat_id, int) else None,
+        })
+    except Exception:
+        pass
+
+
 async def _tg_call(session: aiohttp.ClientSession, token: str, method: str, payload: dict) -> Any:
     url = f"{_api_base(token)}/{method}"
     async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=25)) as r:
@@ -127,6 +139,7 @@ async def telegram_loop() -> None:
     async with aiohttp.ClientSession() as session:
         if remote.get("allowed_chat_id") is not None:
             await _send(session, token, int(remote["allowed_chat_id"]), "TradingFans bot connected. Send /help")
+            _log_remote_event("startup", "connected", chat_id=int(remote["allowed_chat_id"]))
 
         while True:
             try:
@@ -179,12 +192,14 @@ async def telegram_loop() -> None:
                         if cmd == "pair":
                             if pair_pin and (not args or args[0] != pair_pin):
                                 await _send(session, token, incoming_chat_id, "Pair PIN required. Use /pair <pin>")
+                                _log_remote_event("pair", "pin_required", chat_id=incoming_chat_id)
                                 continue
                             cfg["telegram_chat_id"] = incoming_chat_id
                             _save_cfg(cfg)
                             remote["allowed_chat_id"] = incoming_chat_id
                             remote["status"] = "ON"
                             await _send(session, token, incoming_chat_id, "Paired. You are now authorized. Send /help")
+                            _log_remote_event("pair", "ok", chat_id=incoming_chat_id)
                         else:
                             await _send(
                                 session, token, incoming_chat_id,
@@ -202,24 +217,33 @@ async def telegram_loop() -> None:
                         await _send(
                             session, token, int(remote["allowed_chat_id"]),
                             "Commands:\n"
+                            "/ping\n"
                             "/status\n"
                             "/pause | /resume\n"
                             "/tuner on|off\n"
                             "/set <key> <value>\n"
                             f"keys: {keys}"
                         )
+                        _log_remote_event("cmd", "help", chat_id=incoming_chat_id)
+                    elif cmd == "ping":
+                        await _send(session, token, int(remote["allowed_chat_id"]), "pong")
+                        _log_remote_event("cmd", "ping", chat_id=incoming_chat_id)
                     elif cmd == "status":
                         await _send(session, token, int(remote["allowed_chat_id"]), _status_text())
+                        _log_remote_event("cmd", "status", chat_id=incoming_chat_id)
                     elif cmd == "pause":
                         STATE.paused = True
                         await _send(session, token, int(remote["allowed_chat_id"]), "Paused trading loop.")
+                        _log_remote_event("cmd", "pause", chat_id=incoming_chat_id)
                     elif cmd in ("resume", "unpause"):
                         STATE.paused = False
                         await _send(session, token, int(remote["allowed_chat_id"]), "Resumed trading loop.")
+                        _log_remote_event("cmd", "resume", chat_id=incoming_chat_id)
                     elif cmd == "tuner" and args:
                         val = args[0].lower()
                         STATE.tuner_enabled = val in ("1", "on", "true", "yes")
                         await _send(session, token, int(remote["allowed_chat_id"]), f"Tuner {'ON' if STATE.tuner_enabled else 'OFF'}.")
+                        _log_remote_event("cmd", f"tuner {val}", chat_id=incoming_chat_id)
                     elif cmd == "set" and len(args) >= 2:
                         key = args[0]
                         try:
@@ -231,11 +255,14 @@ async def telegram_loop() -> None:
                         if ok:
                             persist_current()
                             await _send(session, token, int(remote["allowed_chat_id"]), f"OK {key}: {old} -> {new}")
+                            _log_remote_event("cmd", f"set {key} {new}", chat_id=incoming_chat_id)
                         else:
                             await _send(session, token, int(remote["allowed_chat_id"]), f"ERR {msg_txt}")
+                            _log_remote_event("cmd", f"set_fail {key} ({msg_txt})", chat_id=incoming_chat_id)
                     else:
                         if cmd:
                             await _send(session, token, int(remote["allowed_chat_id"]), "Unknown command. Send /help")
+                            _log_remote_event("cmd", f"unknown {cmd}", chat_id=incoming_chat_id)
             except Exception as exc:
                 remote["status"] = "ERR"
                 remote["last_error"] = str(exc)[:200]
@@ -247,4 +274,3 @@ async def _sleep(sec: float) -> None:
     import asyncio
 
     await asyncio.sleep(max(0.25, float(sec)))
-

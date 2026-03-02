@@ -56,9 +56,9 @@ SPECS: dict[str, ParamSpec] = {
     ),
     "engine.max_size_usdc": ParamSpec(
         key="engine.max_size_usdc",
-        default=10.0,
+        default=25.0,
         min_v=1.0,
-        max_v=50.0,
+        max_v=200.0,
         step=0.5,
         description="Maximum order size (USDC) per trade.",
         live_allowed=False,
@@ -74,10 +74,10 @@ SPECS: dict[str, ParamSpec] = {
     ),
     "engine.min_order_size_usdc": ParamSpec(
         key="engine.min_order_size_usdc",
-        default=1.00,
+        default=5.00,
         min_v=1.00,
-        max_v=20.00,
-        step=0.50,
+        max_v=50.00,
+        step=1.00,
         description="Minimum order size (USDC) required to submit a trade.",
         live_allowed=True,
     ),
@@ -125,7 +125,6 @@ AUTO_ALLOWLIST: tuple[str, ...] = (
     "decision.min_edge",
     "engine.max_size_usdc",
     "engine.poll_interval_sec",
-    "engine.min_order_size_usdc",
     "risk.max_time_to_expiry_sec",
 )
 
@@ -186,7 +185,9 @@ def init_from_config(*, dry_run: bool) -> None:
         else:
             # Dry-run sensible defaults when no config exists yet.
             if dry_run and key == "engine.min_order_size_usdc":
-                raw = 1.00
+                raw = 5.00
+            elif dry_run and key == "engine.max_size_usdc":
+                raw = 25.0
             elif dry_run and key == "risk.max_time_to_expiry_sec":
                 raw = 7200.0
             else:
@@ -194,6 +195,19 @@ def init_from_config(*, dry_run: bool) -> None:
         return spec.quantize(raw)
 
     params = {k: get(k) for k in SPECS.keys()}
+
+    # Practical floors in DRY RUN: avoid "pennies" sizing even if an older tuner.json exists.
+    # If the user wants smaller sizing, they can override via /set and it will persist.
+    if dry_run:
+        changed = False
+        for k in ("engine.max_size_usdc", "engine.min_order_size_usdc"):
+            spec = SPECS[k]
+            v = float(params.get(k, spec.default))
+            if v < float(spec.default):
+                params[k] = spec.quantize(spec.default)
+                changed = True
+        if changed:
+            _atomic_write_json(path, {"updated_at_epoch": time.time(), "params": dict(params)})
 
     STATE.tuner_config_path = str(path)
     STATE.tuner_allowlist = list(AUTO_ALLOWLIST)
@@ -313,7 +327,10 @@ def autotune_step() -> None:
     target_10m = max(0.0, float(target_per_hour) / 6.0)
 
     deployed = float(STATE.dry_deployed) if STATE.dry_run else 0.0
-    available = max(0.0, float(STATE.DRY_START_BALANCE) - deployed) if STATE.dry_run else 0.0
+    available = (
+        max(0.0, float(STATE.DRY_START_BALANCE) + float(getattr(STATE, "dry_realized_pnl", 0.0)) - deployed)
+        if STATE.dry_run else 0.0
+    )
     avail_ratio = (available / float(STATE.DRY_START_BALANCE)) if STATE.dry_run else 0.0
 
     metrics = {

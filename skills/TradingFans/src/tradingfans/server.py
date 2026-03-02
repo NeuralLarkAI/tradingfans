@@ -394,7 +394,7 @@ body::before {
 <div id="markets">
   <div class="sec-hdr">
     <span class="sec-title">Active Scan Window</span>
-    <span class="sec-meta" id="mkt-count">0 &lt; TTE &lt; 600s</span>
+    <span class="sec-meta" id="mkt-count">0 &lt; TTE</span>
   </div>
   <div id="mkt-list"><div class="no-data">Scanning — no 5m crypto markets in window</div></div>
 </div>
@@ -536,6 +536,13 @@ body::before {
       <div id="tuner-event-list" class="trade-list">
         <div class="no-data">No tuning changes yet</div>
       </div>
+
+      <div class="tuner-grid-hdr">
+        <span>TIME</span><span>REMOTE</span><span style="grid-column: span 3">DETAIL</span>
+      </div>
+      <div id="remote-event-list" class="trade-list">
+        <div class="no-data">No remote activity yet</div>
+      </div>
     </div><!-- /panel-tuner -->
 
   </div><!-- #tab-content -->
@@ -615,17 +622,18 @@ function renderQuote(sym, q) {
 }
 
 // ── Render markets ─────────────────────────────────────────────
-function renderMarkets(ms) {
+function renderMarkets(ms, maxTteSec) {
+  maxTteSec = Math.max(1, Number(maxTteSec || 600));
   const el = $('mkt-list');
   if (!ms || !ms.length) {
-    $('mkt-count').textContent = '0 < TTE < 600s';
+    $('mkt-count').textContent = `0 < TTE < ${Math.round(maxTteSec)}s`;
     el.innerHTML = '<div class="no-data">Scanning — no 5m crypto markets in window</div>';
     return;
   }
-  $('mkt-count').textContent = `${ms.length} market${ms.length!==1?'s':''} · TTE < 600s`;
+  $('mkt-count').textContent = `${ms.length} market${ms.length!==1?'s':''} · TTE < ${Math.round(maxTteSec)}s`;
   el.innerHTML = ms.map(m => {
     const tte = Math.max(0, m.tte);
-    const pct = Math.min(100, (tte / 600) * 100);
+    const pct = Math.min(100, (tte / maxTteSec) * 100);
     const tc  = tte < 90 ? 'var(--red)' : tte < 200 ? 'var(--orange)' : 'var(--white2)';
     const fc  = tte < 90 ? 'var(--red)' : tte < 200 ? 'var(--orange)' : 'var(--dim)';
     const impl = (m.implied_yes * 100).toFixed(1);
@@ -838,6 +846,25 @@ function renderRemote(remote) {
   el.innerHTML = `Telegram: <span class="t-dim">${st}</span>`;
 }
 
+function renderRemoteEvents(events) {
+  const el = $('remote-event-list');
+  if (!el) return;
+  if (!events || !events.length) {
+    el.innerHTML = '<div class="no-data">No remote activity yet</div>';
+    return;
+  }
+  el.innerHTML = events.slice(0, 80).map(ev => {
+    const t = ev.ts_epoch ? new Date(ev.ts_epoch*1000).toLocaleTimeString() : '—';
+    const k = esc(String(ev.kind || ''));
+    const d = esc(String(ev.detail || ''));
+    return `<div class="tuner-grid-row">
+      <span class="t-dim">${t}</span>
+      <span class="t-key">${k}</span>
+      <span class="t-dim" style="grid-column: span 3">${d}</span>
+    </div>`;
+  }).join('');
+}
+
 function copyWallet() {
   if (!walletAddr) return;
   navigator.clipboard.writeText(walletAddr).then(() => {
@@ -903,7 +930,7 @@ async function poll() {
     }
 
     // Markets
-    renderMarkets(d.active_markets);
+    renderMarkets(d.active_markets, d.max_time_to_expiry);
 
     // Dry run tab
     renderDryBalance(d.dry_balance);
@@ -916,6 +943,7 @@ async function poll() {
     // Tuner tab
     renderTuner(d.tuner, d.dry_run);
     renderRemote(d.remote);
+    renderRemoteEvents(d.remote_events);
 
     // Log
     if (d.log_lines && d.log_lines.length > lastLog) {
