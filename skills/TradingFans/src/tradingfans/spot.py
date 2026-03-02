@@ -67,7 +67,7 @@ COINBASE_SYMBOLS: dict[str, str] = {
     "FIL": "FIL",
 }
 
-WINDOW_SECONDS    = 300    # 5-minute rolling window
+WINDOW_SECONDS    = 1200   # rolling window (20m) to support expiry/PnL resolution lookups
 STALE_THRESHOLD   = 15.0  # seconds before spot is considered stale
 RECONNECT_DELAY   = 3.0   # seconds between WS reconnect attempts
 REST_POLL_INTERVAL = 5.0  # seconds between REST polls
@@ -122,6 +122,25 @@ class SpotFeed:
             if ts <= epoch_ts:
                 return px if ts >= lo else None
         return None
+
+    def price_near(self, symbol: str, epoch_ts: float, *, tolerance_sec: float = 20.0) -> float | None:
+        """
+        Return the closest tick price within ±tolerance_sec of epoch_ts.
+        Useful when tick cadence (REST polling) doesn't align perfectly with the target timestamp.
+        """
+        dq = self._windows.get(symbol.upper())
+        if not dq:
+            return None
+        target = float(epoch_ts)
+        tol = float(tolerance_sec)
+        best_dt = None
+        best_px = None
+        for ts, px in dq:
+            dt = abs(float(ts) - target)
+            if dt <= tol and (best_dt is None or dt < best_dt):
+                best_dt = dt
+                best_px = px
+        return best_px
 
     # ── Lifecycle ─────────────────────────────────────────────
 

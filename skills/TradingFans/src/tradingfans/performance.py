@@ -59,11 +59,28 @@ def _spot_return_window(spot: SpotFeed, symbol: str, *, end_epoch: float) -> flo
     Return spot return over the 5-minute window ending at end_epoch:
       ret = price(end_epoch) / price(end_epoch - 300) - 1
     """
-    px_end = spot.price_at(symbol, end_epoch, max_lookback_sec=900.0)
-    px_start = spot.price_at(symbol, end_epoch - 300.0, max_lookback_sec=900.0)
-    if px_end is None or px_start is None or px_start <= 0:
-        return None
-    return (float(px_end) - float(px_start)) / float(px_start)
+    def _ret(end_ts: float) -> float | None:
+        px_end = (
+            spot.price_at(symbol, end_ts, max_lookback_sec=900.0)
+            or spot.price_near(symbol, end_ts, tolerance_sec=20.0)
+        )
+        px_start = (
+            spot.price_at(symbol, end_ts - 300.0, max_lookback_sec=900.0)
+            or spot.price_near(symbol, end_ts - 300.0, tolerance_sec=20.0)
+        )
+        if px_end is None or px_start is None or px_start <= 0:
+            return None
+        return (float(px_end) - float(px_start)) / float(px_start)
+
+    # Primary: align to the market end time.
+    r = _ret(float(end_epoch))
+    if r is not None:
+        return r
+
+    # Fallback: compute over the last 5 minutes ending "now" (close enough once end_epoch has passed).
+    # This prevents trades from getting stuck UNRESOLVED due to timestamp/tick cadence misalignment.
+    import time
+    return _ret(time.time())
 
 
 def resolve_due_trades(spot: SpotFeed) -> None:
