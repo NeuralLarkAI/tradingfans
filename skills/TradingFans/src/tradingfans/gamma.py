@@ -43,12 +43,31 @@ class Market:
     yes_token_id: str
     no_token_id: str
     slug: str = ""
+    gamma_best_bid: float | None = None
+    gamma_best_ask: float | None = None
+    gamma_last_trade: float | None = None
+    gamma_outcome_prices: list[float] | None = None
 
     @property
     def time_to_expiry(self) -> float:
         """Seconds until market closes (negative when expired)."""
         now = datetime.now(tz=timezone.utc)
         return (self.end_time - now).total_seconds()
+
+    @property
+    def gamma_mid(self) -> float | None:
+        """
+        Best-effort mid price from Gamma fields (YES price for the market).
+        """
+        if self.gamma_best_bid is not None and self.gamma_best_ask is not None and self.gamma_best_ask > self.gamma_best_bid:
+            return (float(self.gamma_best_bid) + float(self.gamma_best_ask)) / 2.0
+        if self.gamma_last_trade is not None:
+            return float(self.gamma_last_trade)
+        if self.gamma_outcome_prices and len(self.gamma_outcome_prices) >= 1:
+            # Gamma returns outcomePrices for the market. For these 5m Up/Down events, the market is typically binary
+            # and this value has historically aligned with the "YES" token price used by the CLOB.
+            return float(self.gamma_outcome_prices[0])
+        return None
 
 
 # ── Filter helpers ────────────────────────────────────────────
@@ -132,6 +151,20 @@ def _parse_markets(event: dict) -> list[Market]:
             if not market_id:
                 continue
 
+            # Optional pricing fields from Gamma (can help when CLOB books are pathological).
+            best_bid = mkt.get("bestBid")
+            best_ask = mkt.get("bestAsk")
+            last_trade = mkt.get("lastTradePrice")
+            outcome_prices_raw = mkt.get("outcomePrices")
+            outcome_prices: list[float] | None = None
+            try:
+                if isinstance(outcome_prices_raw, str):
+                    outcome_prices_raw = json.loads(outcome_prices_raw)
+                if isinstance(outcome_prices_raw, list):
+                    outcome_prices = [float(x) for x in outcome_prices_raw]
+            except Exception:
+                outcome_prices = None
+
             out.append(
                 Market(
                     market_id=str(market_id),
@@ -142,6 +175,10 @@ def _parse_markets(event: dict) -> list[Market]:
                     yes_token_id=tokens[0],
                     no_token_id=tokens[1],
                     slug=mkt.get("slug") or event.get("slug") or "",
+                    gamma_best_bid=float(best_bid) if best_bid is not None else None,
+                    gamma_best_ask=float(best_ask) if best_ask is not None else None,
+                    gamma_last_trade=float(last_trade) if last_trade is not None else None,
+                    gamma_outcome_prices=outcome_prices,
                 )
             )
         except Exception as exc:

@@ -249,8 +249,20 @@ async def _evaluate_market(
     window = spot.window(symbol)
 
     book = await loop.run_in_executor(None, clob.get_book, market.yes_token_id)
-    implied_yes: float | None = book.mid if book else None
+
+    # Many 5m markets have pathological CLOB books (best_bid~0.01/best_ask~0.99 => mid~0.50).
+    # In DRY RUN we allow a Gamma-derived implied price so the UI and model aren't stuck at 50%.
+    implied_yes: float | None = None
+    if book and book.mid is not None:
+        implied_yes = float(book.mid)
+        if STATE.dry_run and book.spread is not None and float(book.spread) >= 0.50:
+            implied_yes = None
+
     if implied_yes is None:
+        implied_yes = float(market.gamma_mid) if market.gamma_mid is not None else None
+
+    # In live mode, if we still don't have a price/book, skip.
+    if implied_yes is None or (not STATE.dry_run and book is None):
         return None
 
     rc: RiskCheck = risk_evaluate(
@@ -483,15 +495,30 @@ async def trading_loop(
                 if not (0.0 < m.time_to_expiry < max_tte):
                     continue
                 book = await loop.run_in_executor(None, clob.get_book, m.yes_token_id)
+
+                implied = None
+                spread = 0.0
+                depth_ok = False
                 if book:
+                    implied = float(book.mid)
+                    spread = float(book.spread)
+                    depth_ok = check_depth(book, book.mid)
+                    if STATE.dry_run and spread >= 0.50 and m.gamma_mid is not None:
+                        implied = float(m.gamma_mid)
+                elif STATE.dry_run and m.gamma_mid is not None:
+                    implied = float(m.gamma_mid)
+                    spread = 1.0
+                    depth_ok = True
+
+                if implied is not None:
                     active.append(ActiveMarket(
                         market_id=m.market_id,
                         question=m.question,
                         symbol=sym,
                         tte=m.time_to_expiry,
-                        implied_yes=book.mid,
-                        spread=book.spread,
-                        depth_ok=check_depth(book, book.mid),
+                        implied_yes=float(implied),
+                        spread=float(spread),
+                        depth_ok=bool(depth_ok),
                     ))
             STATE.active_markets = active
 
