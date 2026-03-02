@@ -289,6 +289,7 @@ async def _evaluate_market(
             edge=decision.edge,
             p_model=decision.p_model,
             implied_yes=implied_yes,
+            price_paid=implied_yes,
             m1=decision.m1,
             m5=decision.m5,
             vol1=decision.vol1,
@@ -312,13 +313,27 @@ async def _evaluate_market(
         price = book.best_ask if book.best_ask else implied_yes
     else:
         token_id = market.no_token_id
-        price = 1.0 - (book.best_bid if book.best_bid else implied_yes)
-        price = max(0.01, min(price, 0.99))
+        # For NO, use the NO-token book when possible. Using (1 - YES best_bid) is not reliable
+        # in sparse books (common in 5m markets) and can create nonsense prices like 0.99.
+        book_no = await loop.run_in_executor(None, clob.get_book, token_id)
+        implied_no = 1.0 - implied_yes
+        price = (book_no.best_ask if (book_no and book_no.best_ask) else implied_no)
+        price = max(0.01, min(float(price), 0.99))
 
     log.info(
         "🔔 TRADE | %-8s | size=%.2f USDC | price=%.4f | edge=%+.4f | %s",
         decision.signal, size, price, decision.edge, market.question[:55],
     )
+
+    # Update the last signal record with the computed execution price (even if order fails).
+    if STATE.recent_signals:
+        sr0 = STATE.recent_signals[0]
+        STATE.recent_signals[0] = SignalRecord(
+            ts=sr0.ts, signal=sr0.signal, edge=sr0.edge, p_model=sr0.p_model,
+            implied_yes=sr0.implied_yes, price_paid=price, m1=sr0.m1, m5=sr0.m5, vol1=sr0.vol1,
+            size_usdc=sr0.size_usdc, order_id=sr0.order_id, question=sr0.question, symbol=sr0.symbol,
+            ts_epoch=sr0.ts_epoch, expires_epoch=sr0.expires_epoch,
+        )
 
     order_id = await loop.run_in_executor(
         None, clob.place_order, token_id, decision.signal, size, price
@@ -345,7 +360,7 @@ async def _evaluate_market(
             sr = STATE.recent_signals[0]
             STATE.recent_signals[0] = SignalRecord(
                 ts=sr.ts, signal=sr.signal, edge=sr.edge, p_model=sr.p_model,
-                implied_yes=sr.implied_yes, m1=sr.m1, m5=sr.m5, vol1=sr.vol1,
+                implied_yes=sr.implied_yes, price_paid=sr.price_paid, m1=sr.m1, m5=sr.m5, vol1=sr.vol1,
                 size_usdc=size, order_id=order_id, question=sr.question, symbol=sr.symbol,
                 ts_epoch=sr.ts_epoch,
                 expires_epoch=sr.expires_epoch,

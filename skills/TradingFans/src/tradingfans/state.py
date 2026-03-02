@@ -40,6 +40,7 @@ class SignalRecord:
     edge: float
     p_model: float
     implied_yes: float
+    price_paid: float      # token price used for sizing/execution (0–1)
     m1: float
     m5: float
     vol1: float
@@ -166,7 +167,7 @@ class AgentState:
                 "symbol": s.symbol,
                 "signal": s.signal,
                 "size_usdc": round(s.size_usdc, 2),
-                "price": round(s.implied_yes * 100, 1),       # as % for display
+                "price": round(float(getattr(s, "price_paid", s.implied_yes)) * 100, 1),  # as % for display
                 "edge": round(s.edge * 100, 2),               # as % for display
                 "exp_pnl": round(abs(s.edge) * s.size_usdc, 2),
                 "question": s.question,
@@ -251,8 +252,21 @@ class AgentState:
             },
             "strategy": dict(self.strategy),
             "performance": {
-                "open_trades": len(self.open_trades),
-                "resolved_trades": list(self.resolved_trades)[:200],
+                "open_trades": [
+                    {
+                        "market_id": t.get("market_id", "")[:16],
+                        "symbol": t.get("symbol"),
+                        "side": t.get("side"),
+                        "size_usdc": round(float(t.get("size_usdc", 0.0)), 2),
+                        "price_paid": round(float(t.get("price_paid", 0.0)) * 100, 1),
+                        "entry_epoch": float(t.get("entry_epoch", 0.0)),
+                        "end_epoch": float(t.get("end_epoch", 0.0)),
+                        "tte_sec": round(max(0.0, float(t.get("end_epoch", 0.0)) - time.time()), 1),
+                        "question": str(t.get("question", ""))[:120],
+                    }
+                    for t in list(self.open_trades.values())
+                ],
+                "resolved_trades": list(self.resolved_trades)[:500],
             },
             "remote": dict(self.remote),
             "remote_events": list(self.remote_events),

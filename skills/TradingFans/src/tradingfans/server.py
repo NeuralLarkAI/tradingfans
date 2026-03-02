@@ -158,6 +158,7 @@ body::before {
 .sec-hdr {
   display: flex; align-items: center; justify-content: space-between;
   padding: 5px 20px; background: var(--bg2); border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .sec-title { font-size: 8px; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: var(--dim); }
 .sec-meta  { font-size: 9px; color: var(--dim); letter-spacing: 0.08em; }
@@ -220,7 +221,7 @@ body::before {
 
 /* ── Balance row (Dry Run tab) ── */
 #dry-balance {
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, 1fr);
   flex-shrink: 0; border-bottom: 1px solid var(--border2);
 }
 .bal-card { padding: 11px 16px; border-right: 1px solid var(--border2); }
@@ -266,7 +267,7 @@ body::before {
 .t-dim { color: var(--dim); }
 .t-num { text-align: right; font-weight: 700; }
 .t-reason { color: var(--white2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.trade-list { overflow-y: auto; flex: 1; }
+.trade-list { overflow-y: auto; flex: 1; min-height: 0; }
 .trade-list::-webkit-scrollbar { width: 2px; }
 .trade-list::-webkit-scrollbar-thumb { background: var(--dim2); }
 .trade-row {
@@ -404,6 +405,9 @@ body::before {
   <button class="tab-btn active" id="tbtn-dry" onclick="switchTab('dry')">
     <div class="tb-dot"></div>DRY RUN · $10K
   </button>
+  <button class="tab-btn" id="tbtn-history" onclick="switchTab('history')">
+    <div class="tb-dot"></div>HISTORY
+  </button>
   <button class="tab-btn tab-live" id="tbtn-live" onclick="switchTab('live')">
     <div class="tb-dot"></div>MAINNET
   </button>
@@ -413,6 +417,7 @@ body::before {
   <div id="tab-spacer"></div>
   <div id="tab-meta">
     <span id="tmeta-dry">0 trades · $0.00 deployed</span>
+    <span id="tmeta-history" style="display:none">0 resolved</span>
     <span id="tmeta-live" style="display:none">0 live trades</span>
     <span id="tmeta-tuner" style="display:none">Tuner OFF</span>
   </div>
@@ -445,26 +450,52 @@ body::before {
           <div class="bal-sub">Uncommitted</div>
         </div>
         <div class="bal-card">
+          <div class="bal-lbl">REALIZED PnL</div>
+          <div class="bal-val pos" id="dr-rpnl">$0.00</div>
+          <div class="bal-sub" id="dr-rpnl-sub">from resolved markets</div>
+        </div>
+        <div class="bal-card">
           <div class="bal-lbl">EXPECTED PnL</div>
-          <div class="bal-val pos" id="dr-pnl">$0.00</div>
-          <div class="bal-sub" id="dr-pnl-sub">edge × size sum</div>
+          <div class="bal-val pos" id="dr-epnl">$0.00</div>
+          <div class="bal-sub" id="dr-epnl-sub">expected vs market</div>
         </div>
       </div>
 
-      <!-- Trade table header -->
+      <!-- Open trades header -->
       <div class="trade-hdr">
-        <span>TIME</span><span>TTE</span><span>SYM</span><span>SIGNAL</span>
+        <span>TIME</span><span>TTE</span><span>SYM</span><span>SIDE</span>
         <span style="text-align:right">SIZE</span>
         <span style="text-align:right">PRICE</span>
-        <span style="text-align:right">EDGE</span>
-        <span style="text-align:right">EXP PnL</span>
+        <span style="text-align:right">ID</span>
+        <span>QUESTION</span>
       </div>
 
       <!-- Trade list -->
-      <div id="dry-trade-list" class="trade-list">
-        <div class="no-data">No dry-run trades yet — waiting for signal &gt; 2% edge</div>
+      <div id="open-trade-list" class="trade-list">
+        <div class="no-data">No open trades — waiting for signals near expiry</div>
       </div>
     </div><!-- /panel-dry -->
+
+    <!-- ══ HISTORY PANEL ══ -->
+    <div id="panel-history" class="tab-panel">
+      <div class="sec-hdr">
+        <span class="sec-title">Resolved Trades</span>
+        <span class="sec-meta" id="hist-meta">0 resolved</span>
+      </div>
+
+      <div class="trade-hdr">
+        <span>TIME</span><span>SYM</span><span>SIDE</span>
+        <span style="text-align:right">SIZE</span>
+        <span style="text-align:right">PRICE</span>
+        <span style="text-align:right">OUT</span>
+        <span style="text-align:right">PnL</span>
+        <span>QUESTION</span>
+      </div>
+
+      <div id="history-trade-list" class="trade-list">
+        <div class="no-data">No resolved trades yet</div>
+      </div>
+    </div><!-- /panel-history -->
 
     <!-- ══ MAINNET PANEL ══ -->
     <div id="panel-live" class="tab-panel">
@@ -581,7 +612,7 @@ const fmtTte = sec => {
 // ── Tab switching ──────────────────────────────────────────────
 function switchTab(tab) {
   currentTab = tab;
-  ['dry', 'live', 'tuner'].forEach(t => {
+  ['dry', 'history', 'live', 'tuner'].forEach(t => {
     $('tbtn-' + t).classList.toggle('active', t === tab);
     $('panel-' + t).classList.toggle('active', t === tab);
     const meta = $('tmeta-' + t);
@@ -654,47 +685,81 @@ function renderMarkets(ms, maxTteSec) {
 // ── Render dry-run balance ─────────────────────────────────────
 function renderDryBalance(bal) {
   if (!bal) return;
-  const { deployed, available, exp_pnl, trade_count } = bal;
+  const { deployed, available, exp_pnl, realized_pnl, trade_count } = bal;
   $('dr-dep').textContent = '$' + fmt(deployed);
   $('dr-dep').className   = 'bal-val' + (deployed > 0 ? '' : '');
   $('dr-dep-sub').textContent = `${trade_count} trade${trade_count !== 1 ? 's' : ''} at risk`;
   $('dr-avl').textContent = '$' + fmt(available);
-  const pnlEl = $('dr-pnl');
-  pnlEl.textContent = (exp_pnl >= 0 ? '+' : '') + '$' + fmt(Math.abs(exp_pnl));
-  pnlEl.className   = 'bal-val ' + (exp_pnl >= 0 ? 'pos' : 'neg');
-  $('dr-pnl-sub').textContent = (exp_pnl >= 0 ? '▲ ' : '▼ ') + 'expected vs market';
+
+  const rEl = $('dr-rpnl');
+  rEl.textContent = (realized_pnl >= 0 ? '+' : '') + '$' + fmt(Math.abs(realized_pnl));
+  rEl.className   = 'bal-val ' + (realized_pnl >= 0 ? 'pos' : 'neg');
+  $('dr-rpnl-sub').textContent = 'from resolved markets';
+
+  const eEl = $('dr-epnl');
+  eEl.textContent = (exp_pnl >= 0 ? '+' : '') + '$' + fmt(Math.abs(exp_pnl));
+  eEl.className   = 'bal-val ' + (exp_pnl >= 0 ? 'pos' : 'neg');
+  $('dr-epnl-sub').textContent = (exp_pnl >= 0 ? '▲ ' : '▼ ') + 'expected vs market';
   // Tab meta
   $('tmeta-dry').textContent = `${trade_count} trade${trade_count!==1?'s':''} · $${fmt(deployed)} deployed`;
 }
 
 // ── Render dry-run trades ──────────────────────────────────────
-function renderDryTrades(trades) {
-  const el = $('dry-trade-list');
+function renderOpenTrades(trades) {
+  const el = $('open-trade-list');
+  if (!el) return;
   if (!trades || !trades.length) {
-    el.innerHTML = '<div class="no-data">No dry-run trades yet — waiting for signal &gt; 2% edge</div>';
-    $('dr-pnl-sub').textContent = 'Time-to-expiry appears once trades execute';
+    el.innerHTML = '<div class="no-data">No open trades — waiting for signals near expiry</div>';
     return;
   }
+  el.innerHTML = trades
+    .slice()
+    .sort((a, b) => Number(a.tte_sec || 0) - Number(b.tte_sec || 0))
+    .map(t => {
+      const bc  = t.side === 'BUY_YES' ? 't-yes' : 't-no';
+      const lbl = t.side === 'BUY_YES' ? 'BUY YES' : 'BUY NO';
+      const ts = t.entry_epoch ? new Date(Number(t.entry_epoch) * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '—';
+      return `<div class="trade-row">
+        <span class="t-ts">${ts}</span>
+        <span class="t-ts">${fmtTte(t.tte_sec)}</span>
+        <span class="t-sym">${esc(String(t.symbol || ''))}</span>
+        <span class="t-badge ${bc}">${lbl}</span>
+        <span class="t-size">$${fmt(t.size_usdc)}</span>
+        <span class="t-price">${Number(t.price_paid || 0).toFixed(1)}%</span>
+        <span class="t-oid">${esc(String(t.market_id || ''))}</span>
+        <span class="t-oid">${esc(String(t.question || ''))}</span>
+      </div>`;
+    }).join('');
+}
+
+function renderHistory(trades) {
+  const el = $('history-trade-list');
+  const meta = $('hist-meta');
+  if (!el) return;
+  if (!trades || !trades.length) {
+    el.innerHTML = '<div class="no-data">No resolved trades yet</div>';
+    if (meta) meta.textContent = '0 resolved';
+    $('tmeta-history').textContent = '0 resolved';
+    return;
+  }
+  if (meta) meta.textContent = `${trades.length} resolved`;
+  $('tmeta-history').textContent = `${trades.length} resolved`;
   el.innerHTML = trades.map(t => {
-    const bc  = t.signal === 'BUY_YES' ? 't-yes' : 't-no';
-    const lbl = t.signal === 'BUY_YES' ? 'BUY YES' : 'BUY NO';
-    const ec  = t.edge >= 0 ? 'p' : 'n';
-    const pc  = t.exp_pnl >= 0 ? 'pos' : 'neg';
+    const ts = t.ts_epoch ? new Date(Number(t.ts_epoch) * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '—';
+    const pnl = Number(t.pnl_usdc || 0);
+    const pc  = pnl >= 0 ? 'p' : 'n';
+    const bc  = t.side === 'BUY_YES' ? 't-yes' : 't-no';
     return `<div class="trade-row">
-      <span class="t-ts">${t.ts}</span>
-      <span class="t-ts">${fmtTte(t.tte_sec)}</span>
-      <span class="t-sym">${t.symbol}</span>
-      <span class="t-badge ${bc}">${lbl}</span>
+      <span class="t-ts">${ts}</span>
+      <span class="t-sym">${esc(String(t.symbol || ''))}</span>
+      <span class="t-badge ${bc}">${t.side === 'BUY_YES' ? 'YES' : 'NO'}</span>
       <span class="t-size">$${fmt(t.size_usdc)}</span>
-      <span class="t-price">${t.price.toFixed(1)}%</span>
-      <span class="t-edge ${ec}">${t.edge >= 0 ? '+' : ''}${t.edge.toFixed(2)}%</span>
-      <span class="t-pnl ${pc}">${fmtD(t.exp_pnl)}</span>
+      <span class="t-price">${Number(t.price_paid || 0).toFixed(1)}%</span>
+      <span class="t-edge">${esc(String(t.outcome || ''))}</span>
+      <span class="t-edge ${pc}">${pnl >= 0 ? '+' : ''}$${fmt(Math.abs(pnl))}</span>
+      <span class="t-oid">${esc(String(t.question || ''))}</span>
     </div>`;
   }).join('');
-  const next = Math.min(...trades.map(t => Number(t.tte_sec || 0)).filter(x => x > 0));
-  if (isFinite(next) && next > 0) {
-    $('dr-pnl-sub').textContent = `Next expiry: ${fmtTte(next)} — expected vs market`;
-  }
 }
 
 // ── Render wallet card ─────────────────────────────────────────
@@ -932,9 +997,12 @@ async function poll() {
     // Markets
     renderMarkets(d.active_markets, d.max_time_to_expiry);
 
-    // Dry run tab
+    // Dry run tab (open positions only)
     renderDryBalance(d.dry_balance);
-    renderDryTrades(d.dry_trades);
+    renderOpenTrades(d.performance?.open_trades);
+
+    // History tab
+    renderHistory(d.performance?.resolved_trades);
 
     // Mainnet tab
     renderWallet(d.wallet, d.dry_run);
