@@ -27,6 +27,7 @@ class OpenTrade:
     price_paid: float
     entry_epoch: float
     end_epoch: float
+    agent_id: str = ""
 
 
 def record_open_trade(t: OpenTrade) -> None:
@@ -39,6 +40,7 @@ def record_open_trade(t: OpenTrade) -> None:
         "price_paid": float(t.price_paid),
         "entry_epoch": float(t.entry_epoch),
         "end_epoch": float(t.end_epoch),
+        "agent_id": str(getattr(t, "agent_id", "")),
     }
 
 
@@ -106,6 +108,11 @@ def resolve_due_trades(spot: SpotFeed) -> None:
             if STATE.dry_run:
                 STATE.dry_deployed = max(0.0, STATE.dry_deployed - float(t["size_usdc"]))
 
+            aid = str(t.get("agent_id") or "")
+            if aid:
+                perf = STATE.agent_perf.setdefault(aid, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+                perf["resolved"] = int(perf.get("resolved", 0)) + 1
+
             STATE.resolved_trades.appendleft({
                 "ts_epoch": now,
                 "market_id": t["market_id"][:16],
@@ -118,6 +125,7 @@ def resolve_due_trades(spot: SpotFeed) -> None:
                 "pnl_usdc": 0.0,
                 "question": t["question"][:120],
                 "note": "unresolved_missing_spot_history",
+                "agent_id": aid,
             })
             continue
 
@@ -134,6 +142,13 @@ def resolve_due_trades(spot: SpotFeed) -> None:
             STATE.dry_deployed = max(0.0, STATE.dry_deployed - float(t["size_usdc"]))
             STATE.dry_realized_pnl += pnl
 
+        # Attribute performance to agent (if set).
+        aid = str(t.get("agent_id") or "")
+        if aid:
+            perf = STATE.agent_perf.setdefault(aid, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+            perf["resolved"] = int(perf.get("resolved", 0)) + 1
+            perf["realized_pnl"] = float(perf.get("realized_pnl", 0.0)) + float(pnl)
+
         STATE.resolved_trades.appendleft({
             "ts_epoch": now,
             "market_id": t["market_id"][:16],
@@ -145,4 +160,5 @@ def resolve_due_trades(spot: SpotFeed) -> None:
             "spot_ret_5m_pct": round(ret * 100, 3),
             "pnl_usdc": round(pnl, 2),
             "question": t["question"][:120],
+            "agent_id": aid,
         })

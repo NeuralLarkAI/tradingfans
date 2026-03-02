@@ -31,7 +31,7 @@ from .clob import OrderBook, check_depth, check_spread
 
 # ── Thresholds ────────────────────────────────────────────────
 MIN_TIME_TO_EXPIRY = 0.0    # seconds (must be > 0, i.e., not expired)
-MAX_TIME_TO_EXPIRY = 900.0  # seconds (15-minute cap)
+MAX_TIME_TO_EXPIRY = 600.0  # seconds (10-minute cap)
 
 
 # ── Result ────────────────────────────────────────────────────

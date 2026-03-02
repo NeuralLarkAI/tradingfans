@@ -28,3 +28,13 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# OpenClaw / local agent artifacts
+.openclaw/
+memory/
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md

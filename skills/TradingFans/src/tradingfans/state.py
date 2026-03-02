@@ -57,13 +57,13 @@ class AgentState:
         self.started_at: float = time.time()
         self.dry_run: bool = True
         self.paused: bool = False
-        self.max_size: float = 10.0
+        self.max_size: float = 50.0
         self.symbol_filter: str = "ALL"
         self.poll_interval: float = 5.0
         self.min_edge: float = 0.02
-        self.min_order_size: float = 5.00
+        self.min_order_size: float = 10.00
         self.edge_full_scale: float = 0.05
-        self.max_time_to_expiry: float = 900.0
+        self.max_time_to_expiry: float = 600.0
 
         # Live spot quotes
         self.btc: SpotQuote | None = None
@@ -110,6 +110,13 @@ class AgentState:
         }
         self.open_trades: dict[str, dict] = {}
         self.resolved_trades: deque[dict] = deque(maxlen=500)
+
+        # Multi-agent pool (logical agents sharing memory; max 5 active)
+        self.multi_agent_enabled: bool = False
+        self.agents: list[dict] = []               # list of AgentConfig dicts (public)
+        self.agent_perf: dict[str, dict] = {}      # agent_id -> {trades, resolved, realized_pnl}
+        self.primary_agent_id: str = ""            # if set, route all markets to this agent_id
+        self.agent_evolution_enabled: bool = True  # allow auto-spawn/replace in dry-run
 
         # Remote control (e.g., Telegram)
         self.remote: dict = {
@@ -273,6 +280,7 @@ class AgentState:
                 "open_trades": [
                     {
                         "market_id": t.get("market_id", "")[:16],
+                        "agent_id": str(t.get("agent_id") or ""),
                         "symbol": t.get("symbol"),
                         "side": t.get("side"),
                         "size_usdc": round(float(t.get("size_usdc", 0.0)), 2),
@@ -285,6 +293,13 @@ class AgentState:
                     for t in list(self.open_trades.values())
                 ],
                 "resolved_trades": list(self.resolved_trades)[:500],
+            },
+            "multi_agent": {
+                "enabled": self.multi_agent_enabled,
+                "agents": list(self.agents),
+                "perf": dict(self.agent_perf),
+                "primary_agent_id": self.primary_agent_id,
+                "evolution_enabled": self.agent_evolution_enabled,
             },
             "remote": dict(self.remote),
             "remote_events": list(self.remote_events),

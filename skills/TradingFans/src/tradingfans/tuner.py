@@ -56,7 +56,7 @@ SPECS: dict[str, ParamSpec] = {
     ),
     "engine.max_size_usdc": ParamSpec(
         key="engine.max_size_usdc",
-        default=25.0,
+        default=75.0,
         min_v=1.0,
         max_v=200.0,
         step=0.5,
@@ -74,7 +74,7 @@ SPECS: dict[str, ParamSpec] = {
     ),
     "engine.min_order_size_usdc": ParamSpec(
         key="engine.min_order_size_usdc",
-        default=5.00,
+        default=10.00,
         min_v=1.00,
         max_v=50.00,
         step=1.00,
@@ -92,11 +92,11 @@ SPECS: dict[str, ParamSpec] = {
     ),
     "risk.max_time_to_expiry_sec": ParamSpec(
         key="risk.max_time_to_expiry_sec",
-        default=900.0,
+        default=600.0,
         min_v=300.0,
         max_v=900.0,
         step=60.0,
-        description="Maximum seconds-to-expiry allowed (risk time filter, final window).",
+        description="Maximum seconds-to-expiry allowed (risk time filter, final window). Default 10 min.",
         live_allowed=False,
     ),
     "tuner.target_trades_per_hour": ParamSpec(
@@ -185,11 +185,11 @@ def init_from_config(*, dry_run: bool) -> None:
         else:
             # Dry-run sensible defaults when no config exists yet.
             if dry_run and key == "engine.min_order_size_usdc":
-                raw = 5.00
+                raw = 10.00
             elif dry_run and key == "engine.max_size_usdc":
-                raw = 25.0
+                raw = 75.0
             elif dry_run and key == "risk.max_time_to_expiry_sec":
-                raw = 900.0
+                raw = 600.0
             else:
                 raw = spec.default
         return spec.quantize(raw)
@@ -205,6 +205,15 @@ def init_from_config(*, dry_run: bool) -> None:
             v = float(params.get(k, spec.default))
             if v < float(spec.default):
                 params[k] = spec.quantize(spec.default)
+                changed = True
+        # Practical ceiling: default to a 10-minute window unless explicitly overridden.
+        # This matches 5m market dynamics and keeps the agent focused near expiry.
+        if os.environ.get("POLY_ALLOW_15MIN_TTE", "0") != "1":
+            k = "risk.max_time_to_expiry_sec"
+            spec = SPECS[k]
+            v = float(params.get(k, spec.default))
+            if v > 600.0:
+                params[k] = spec.quantize(600.0)
                 changed = True
         if changed:
             _atomic_write_json(path, {"updated_at_epoch": time.time(), "params": dict(params)})

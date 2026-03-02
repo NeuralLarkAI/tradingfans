@@ -20,6 +20,17 @@ function Upsert-EnvLine([string[]]$Lines, [string]$Key, [string]$Value) {
   return ,$out
 }
 
+$function:Remove-EnvLine = {
+  param([string[]]$Lines, [string]$Key)
+  $pattern = "^\s*{0}\s*=" -f [Regex]::Escape($Key)
+  $out = @()
+  foreach ($l in $Lines) {
+    if ($l -match $pattern) { continue }
+    $out += $l
+  }
+  return ,$out
+}
+
 $envFile = Join-Path $RepoRoot '.env'
 if (!(Test-Path $envFile)) {
   New-Item -ItemType File -Path $envFile -Force | Out-Null
@@ -53,11 +64,12 @@ if ($token -notmatch '^\d+:[A-Za-z0-9_-]{20,}$') {
 }
 
 $pin = ''
-Write-Host "Optional: copy TELEGRAM_PAIR_PIN to clipboard (or leave empty) then press Enter."
-Read-Host | Out-Null
-try { $pin = (Get-Clipboard -Raw) } catch { $pin = '' }
-if ($null -eq $pin) { $pin = '' }
-$pin = $pin.Trim()
+Write-Host ""
+Write-Host "Optional: TELEGRAM_PAIR_PIN hardens pairing so only someone with the PIN can authorize chat control."
+Write-Host "If you don't want a PIN, just press Enter."
+Write-Host "If you previously set a PIN by accident, pressing Enter here will REMOVE it."
+try { Set-Clipboard -Value '' } catch {}
+$pin = (Read-Host -Prompt "TELEGRAM_PAIR_PIN (optional)").Trim()
 if (-not [string]::IsNullOrWhiteSpace($pin)) {
   $pin = -join ($pin.ToCharArray() | Where-Object { $_ -match '[0-9A-Za-z@#%+=:_-]' })
 }
@@ -68,6 +80,8 @@ if (Test-Path $envFile) { $lines = Get-Content $envFile }
 $lines = Upsert-EnvLine $lines 'TELEGRAM_BOT_TOKEN' $token
 if (-not [string]::IsNullOrWhiteSpace($pin)) {
   $lines = Upsert-EnvLine $lines 'TELEGRAM_PAIR_PIN' $pin
+} else {
+  $lines = & $function:Remove-EnvLine $lines 'TELEGRAM_PAIR_PIN'
 }
 
 Set-Content -Path $envFile -Value $lines -Encoding utf8

@@ -33,6 +33,16 @@ from .tuner import autotune_loop, init_from_config
 from .telegram_remote import telegram_loop
 from .performance import OpenTrade, record_open_trade, resolve_due_trades
 from .strategy import PRESETS, pick_strategy
+from .llm_trader import decide as llm_decide, enabled as llm_enabled
+from .agents import (
+    AgentConfig,
+    MAX_AGENTS,
+    assign_agent_id,
+    default_pool,
+    maybe_enable_multi_agent,
+    mutate,
+    to_public_dict,
+)
 
 # ── Custom log handler → STATE.log_lines ──────────────────────
 
@@ -153,8 +163,9 @@ def _detect_symbol(market: Market, *, supported: set[str]) -> str | None:
     return None
 
 
-def _size_usdc(edge: float, max_size: float) -> float:
-    scale = max(0.001, float(getattr(STATE, "edge_full_scale", 0.05)))
+def _size_usdc(edge: float, max_size: float, *, edge_full_scale: float | None = None) -> float:
+    scale_in = float(edge_full_scale) if edge_full_scale is not None else float(getattr(STATE, "edge_full_scale", 0.05))
+    scale = max(0.001, scale_in)
     # Convex sizing: small edges still get meaningful size, while large edges saturate at max_size.
     ratio = max(0.0, abs(edge) / scale)
     fraction = min(ratio ** 0.5, 1.0)
@@ -242,7 +253,7 @@ async def _evaluate_market(
     market: Market,
     spot: SpotFeed,
     clob: ClobClient,
-    max_size: float,
+    agent: AgentConfig,
     symbol_filter: str,
     loop: asyncio.AbstractEventLoop,
 ) -> tuple[Market, DecisionResult, float, str | None] | None:
@@ -259,9 +270,15 @@ async def _evaluate_market(
 
     spot_fresh = spot.is_fresh(symbol)
     window = spot.window(symbol)
-    # Require enough history for 5m features + expiry resolution.
-    if not window or (window[-1][0] - window[0][0]) < 305.0:
-        log.info("RISK FAIL | %s | spot_history<5m", market.question[:40])
+    if not window:
+        return None
+    # Ensure we can resolve outcomes for markets expiring very soon:
+    # We need a spot tick at (end_epoch - 300). If time_to_expiry < 300s, that timestamp is in the past.
+    # Require enough history to cover (300 - tte) seconds; otherwise the trade may become UNRESOLVED.
+    age = float(window[-1][0] - window[0][0])
+    need_hist = max(0.0, 300.0 - float(market.time_to_expiry)) + 5.0
+    if age < need_hist:
+        log.info("RISK FAIL | %s | spot_history<%.0fs", market.question[:40], need_hist)
         return None
 
     book = await loop.run_in_executor(None, clob.get_book, market.yes_token_id)
@@ -292,14 +309,43 @@ async def _evaluate_market(
         log.info("RISK FAIL | %s | %s", market.question[:40], " | ".join(rc.reasons))
         return None
 
-    decision = decision_compute(
-        window=window,
-        implied_yes=implied_yes,
-        min_edge=STATE.min_edge,
-        w_m1=float(STATE.strategy.get("w_m1", 20.0)),
-        w_m5=float(STATE.strategy.get("w_m5", 8.0)),
-        w_vol=float(STATE.strategy.get("w_vol", -4.0)),
-    )
+    if agent.brain == "llm" and llm_enabled(dry_run=STATE.dry_run):
+        # Use the quant feature extractor to compute m1/m5/vol1, then let the LLM estimate fair p_model.
+        feats = decision_compute(window=window, implied_yes=implied_yes, min_edge=0.0, w_m1=0.0, w_m5=0.0, w_vol=0.0)
+        llm_d = await llm_decide(
+            market_id=market.market_id,
+            question=market.question,
+            implied_yes=float(implied_yes),
+            tte_sec=float(market.time_to_expiry),
+            m1=float(feats.m1),
+            m5=float(feats.m5),
+            vol1=float(feats.vol1),
+        )
+        p_model = float(llm_d.p_model)
+        edge = p_model - float(implied_yes)
+        if abs(edge) < float(agent.min_edge):
+            signal = "NO_TRADE"
+        else:
+            signal = "BUY_YES" if edge > 0 else "BUY_NO"
+        decision = DecisionResult(
+            p_model=p_model,
+            edge=edge,
+            m1=float(feats.m1),
+            m5=float(feats.m5),
+            vol1=float(feats.vol1),
+            signal=signal,
+            confidence=abs(edge),
+            reason=str(llm_d.reason),
+        )
+    else:
+        decision = decision_compute(
+            window=window,
+            implied_yes=implied_yes,
+            min_edge=float(agent.min_edge),
+            w_m1=float(agent.w_m1),
+            w_m5=float(agent.w_m5),
+            w_vol=float(agent.w_vol),
+        )
 
     log.info(
         "SIGNAL %-8s | tte=%3.0fs | impl=%.3f | model=%.3f | edge=%+.4f | %s",
@@ -331,9 +377,20 @@ async def _evaluate_market(
     if decision.signal == "NO_TRADE":
         return None
 
-    size = max(_size_usdc(decision.edge, max_size), STATE.min_order_size)
-    if size < STATE.min_order_size:
-        log.debug("Order size %.2f USDC < minimum %.2f — skipping.", size, STATE.min_order_size)
+    size = max(
+        _size_usdc(
+            decision.edge,
+            float(agent.max_size_usdc),
+            edge_full_scale=float(agent.edge_full_scale),
+        ),
+        float(agent.min_order_size_usdc),
+    )
+    if size < float(agent.min_order_size_usdc):
+        log.debug(
+            "Order size %.2f USDC < minimum %.2f — skipping.",
+            size,
+            float(agent.min_order_size_usdc),
+        )
         return None
 
     # Execution price:
@@ -377,6 +434,11 @@ async def _evaluate_market(
         STATE.trade_count += 1
         if STATE.dry_run:
             STATE.dry_deployed += size   # track virtual capital committed
+            try:
+                perf = STATE.agent_perf.setdefault(agent.agent_id, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+                perf["trades"] = int(perf.get("trades", 0)) + 1
+            except Exception:
+                pass
             # Track trade for later resolution / realized PnL
             record_open_trade(OpenTrade(
                 market_id=market.market_id,
@@ -387,6 +449,7 @@ async def _evaluate_market(
                 price_paid=price,
                 entry_epoch=time.time(),
                 end_epoch=market.end_time.timestamp(),
+                agent_id=agent.agent_id,
             ))
         # Update the last signal record with the real order_id
         if STATE.recent_signals:
@@ -454,6 +517,86 @@ async def wallet_poll_loop() -> None:
         await asyncio.sleep(60)
 
 
+async def evolve_agents_loop() -> None:
+    """
+    Bounded "evolution" loop for DRY RUN multi-agent mode.
+
+    Spawns a mutation from the current best agent (by realized pnl) and replaces the
+    current worst agent. Max MAX_AGENTS total. No code changes, only parameters.
+    """
+    last_evolve: float = 0.0
+    while True:
+        try:
+            await asyncio.sleep(20.0)
+            if not STATE.dry_run:
+                continue
+            if not STATE.multi_agent_enabled:
+                continue
+            if not getattr(STATE, "agent_evolution_enabled", True):
+                continue
+            if getattr(STATE, "primary_agent_id", ""):
+                continue
+
+            pool: list[AgentConfig] = getattr(STATE, "_agent_pool", [])  # type: ignore[attr-defined]
+            if not pool or len(pool) < 2:
+                continue
+
+            perf = STATE.agent_perf or {}
+
+            def _metrics(aid: str) -> tuple[float, int]:
+                try:
+                    p = perf.get(aid) or {}
+                    return float(p.get("realized_pnl", 0.0)), int(p.get("resolved", 0))
+                except Exception:
+                    return 0.0, 0
+
+            total_resolved = sum(_metrics(a.agent_id)[1] for a in pool)
+            if total_resolved < 6:
+                continue
+
+            now = time.time()
+            if (now - last_evolve) < 120.0:
+                continue
+
+            ranked = sorted(pool, key=lambda a: (_metrics(a.agent_id)[0], _metrics(a.agent_id)[1]), reverse=True)
+            best = ranked[0]
+            worst = ranked[-1]
+            if best.agent_id == worst.agent_id:
+                continue
+
+            child = mutate(best)
+            pool2 = [a for a in pool if a.agent_id != worst.agent_id]
+            pool2.append(child)
+            pool2 = pool2[:MAX_AGENTS]
+
+            STATE._agent_pool = pool2  # type: ignore[attr-defined]
+            STATE.agents = [to_public_dict(a) for a in pool2]
+            STATE.agent_perf.setdefault(child.agent_id, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+
+            try:
+                STATE.tuner_events.appendleft({
+                    "ts_epoch": now,
+                    "key": "agents.evolve",
+                    "old": worst.agent_id,
+                    "new": child.agent_id,
+                    "reason": f"replace_worst_spawn_from_{best.agent_id}",
+                    "metrics": {
+                        "best_pnl": _metrics(best.agent_id)[0],
+                        "worst_pnl": _metrics(worst.agent_id)[0],
+                        "total_resolved": total_resolved,
+                    },
+                })
+            except Exception:
+                pass
+
+            log.info("AGENTS evolve: spawned %s from %s (replaced %s)", child.agent_id, best.agent_id, worst.agent_id)
+            last_evolve = now
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            continue
+
+
 # ── Main trading loop ─────────────────────────────────────────
 
 async def trading_loop(
@@ -465,13 +608,12 @@ async def trading_loop(
 ) -> None:
     loop = asyncio.get_running_loop()
     log.info(
-        "Trading loop live | max_size=%.2f USDC | poll=%.1fs | symbol=%s",
-        STATE.max_size, STATE.poll_interval, symbol_filter,
+        "Trading loop live | poll=%.1fs | symbol=%s | multi_agent=%s",
+        STATE.poll_interval, symbol_filter, "ON" if STATE.multi_agent_enabled else "OFF",
     )
 
     while True:
         try:
-            max_size = STATE.max_size
             # Update spot state for dashboard
             _update_spot_state(spot)
 
@@ -546,10 +688,33 @@ async def trading_loop(
                 # Only evaluate markets in the configured time window.
                 max_tte = float(STATE.max_time_to_expiry or 900.0)
                 markets = [m for m in markets if 0.0 < m.time_to_expiry < max_tte]
-                tasks = [
-                    _evaluate_market(m, spot, clob, max_size, symbol_filter, loop)
-                    for m in markets
-                ]
+                pool: list[AgentConfig] = getattr(STATE, "_agent_pool", [])  # type: ignore[attr-defined]
+                if not pool:
+                    pool = default_pool()
+                    # seed bounded variants for "evolution"
+                    try:
+                        pool.append(mutate(pool[0]))
+                        pool.append(mutate(pool[1]))
+                    except Exception:
+                        pass
+                    pool = pool[:MAX_AGENTS]
+                    STATE._agent_pool = pool  # type: ignore[attr-defined]
+                    STATE.agents = [to_public_dict(a) for a in pool]
+                    for a in pool:
+                        STATE.agent_perf.setdefault(a.agent_id, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+
+                agent_ids = [a.agent_id for a in pool]
+                tasks = []
+                for m in markets:
+                    primary = str(getattr(STATE, "primary_agent_id", "") or "")
+                    if primary and any(a.agent_id == primary for a in pool):
+                        aid = primary
+                    elif STATE.multi_agent_enabled:
+                        aid = assign_agent_id(m.market_id, agent_ids)
+                    else:
+                        aid = agent_ids[0] if agent_ids else ""
+                    agent = next((a for a in pool if a.agent_id == aid), pool[0])
+                    tasks.append(_evaluate_market(m, spot, clob, agent, symbol_filter, loop))
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 for market, result in zip(markets, results):
@@ -642,6 +807,25 @@ async def main() -> None:
         p = PRESETS[preset_name]
         STATE.strategy = {"name": p.name, "w_m1": p.w_m1, "w_m5": p.w_m5, "w_vol": p.w_vol}
 
+    # Multi-agent pool (logical agents; DRY RUN default ON).
+    STATE.multi_agent_enabled = maybe_enable_multi_agent(dry)
+    pool = default_pool()
+    try:
+        pool.append(mutate(pool[0]))
+        pool.append(mutate(pool[1]))
+    except Exception:
+        pass
+    pool = pool[:MAX_AGENTS]
+    STATE._agent_pool = pool  # type: ignore[attr-defined]
+    STATE.agents = [to_public_dict(a) for a in pool]
+    for a in pool:
+        STATE.agent_perf.setdefault(a.agent_id, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+
+    # Disable autotuner in multi-agent mode to avoid hidden cross-agent coupling.
+    if STATE.multi_agent_enabled:
+        STATE.tuner_enabled = False
+        STATE.tuner_status = "OFF"
+
     gamma = GammaCache()
     spot  = SpotFeed()
     clob  = ClobClient()
@@ -685,11 +869,15 @@ async def main() -> None:
         telegram_loop(),
         name="telegram-remote",
     )
+    evolve_task = asyncio.create_task(
+        evolve_agents_loop(),
+        name="agent-evolve",
+    )
 
     await stop_event.wait()
     log.info("Shutting down...")
 
-    for task in (trade_task, wallet_task, tuner_task, remote_task):
+    for task in (trade_task, wallet_task, tuner_task, remote_task, evolve_task):
         task.cancel()
         try:
             await task

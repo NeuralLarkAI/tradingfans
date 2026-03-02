@@ -19,6 +19,7 @@ import os
 from aiohttp import web
 
 from .state import STATE
+from .agents import MAX_AGENTS, mutate, to_public_dict
 
 log = logging.getLogger(__name__)
 
@@ -270,6 +271,26 @@ body::before {
 .trade-list { overflow-y: auto; flex: 1; min-height: 0; }
 .trade-list::-webkit-scrollbar { width: 2px; }
 .trade-list::-webkit-scrollbar-thumb { background: var(--dim2); }
+
+/* Agents */
+.agent-actions { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border2); background: var(--bg2); flex-shrink: 0; align-items: center; }
+.btn { border: 1px solid var(--border2); background: transparent; color: var(--white2); padding: 6px 10px; font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; cursor: pointer; }
+.btn:hover { color: var(--white); border-color: var(--red-dim); }
+.btn.green:hover { border-color: var(--green); }
+.btn.red:hover { border-color: var(--red); }
+.btn.orange:hover { border-color: var(--orange); }
+.agents-hdr { display: grid; grid-template-columns: 80px 1fr 54px 70px 74px 64px 60px 60px 58px 58px; gap: 8px; padding: 6px 16px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 8px; letter-spacing: 0.16em; color: var(--dim); text-transform: uppercase; flex-shrink: 0; }
+.agent-row { display: grid; grid-template-columns: 80px 1fr 54px 70px 74px 64px 60px 60px 58px 58px; gap: 8px; padding: 9px 16px; border-bottom: 1px solid var(--border); align-items: center; }
+.agent-row:last-child { border-bottom: none; }
+.a-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; color: var(--white2); }
+.a-name { color: var(--white2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.a-brain { font-size: 9px; color: var(--dim); letter-spacing: 0.14em; text-transform: uppercase; }
+.a-stat { text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; color: var(--white2); }
+.a-pnl.pos { color: var(--green); }
+.a-pnl.neg { color: var(--red); }
+.a-chip { font-size: 8px; letter-spacing: 0.18em; padding: 2px 6px; border: 1px solid var(--border2); border-radius: 3px; color: var(--dim); text-transform: uppercase; margin-left: 6px; }
+.a-chip.primary { border-color: var(--green); color: var(--green); }
+
 .chart-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -434,6 +455,9 @@ body::before {
   <button class="tab-btn" id="tbtn-history" onclick="switchTab('history')">
     <div class="tb-dot"></div>HISTORY
   </button>
+  <button class="tab-btn" id="tbtn-agents" onclick="switchTab('agents')">
+    <div class="tb-dot"></div>AGENTS
+  </button>
   <button class="tab-btn tab-live" id="tbtn-live" onclick="switchTab('live')">
     <div class="tb-dot"></div>MAINNET
   </button>
@@ -445,6 +469,7 @@ body::before {
     <span id="tmeta-dry">0 trades · $0.00 deployed</span>
     <span id="tmeta-charts" style="display:none">0 symbols</span>
     <span id="tmeta-history" style="display:none">0 resolved</span>
+    <span id="tmeta-agents" style="display:none">0 agents</span>
     <span id="tmeta-live" style="display:none">0 live trades</span>
     <span id="tmeta-tuner" style="display:none">Tuner OFF</span>
   </div>
@@ -493,7 +518,7 @@ body::before {
         <span>TIME</span><span>TTE</span><span>SYM</span><span>SIDE</span>
         <span style="text-align:right">SIZE</span>
         <span style="text-align:right">PRICE</span>
-        <span style="text-align:right">ID</span>
+        <span style="text-align:right">AGENT</span>
         <span>QUESTION</span>
       </div>
 
@@ -532,6 +557,27 @@ body::before {
         <div class="no-data">No resolved trades yet</div>
       </div>
     </div><!-- /panel-history -->
+
+    <!-- ══ AGENTS PANEL ══ -->
+    <div id="panel-agents" class="tab-panel">
+      <div class="sec-hdr">
+        <span class="sec-title">Agent Pool</span>
+        <span class="sec-meta" id="agents-meta">—</span>
+      </div>
+      <div class="agent-actions">
+        <button class="btn orange" onclick="agentSpawn()">SPAWN</button>
+        <button class="btn" onclick="agentClearPrimary()">CLEAR PRIMARY</button>
+        <button class="btn" onclick="agentToggleEvolution()">TOGGLE EVOLVE</button>
+        <div class="t-dim" style="margin-left:auto" id="agents-note">Max 5 logical agents · shared memory</div>
+      </div>
+      <div class="agents-hdr">
+        <span>ID</span><span>NAME</span><span>BRAIN</span><span class="t-num">TRADES</span><span class="t-num">RESOLVED</span><span class="t-num">PNL</span>
+        <span class="t-num">MINEDGE</span><span class="t-num">MAX$</span><span class="t-num">MIN$</span><span class="t-num">SCALE</span>
+      </div>
+      <div id="agent-list" class="trade-list">
+        <div class="no-data">No agents yet</div>
+      </div>
+    </div><!-- /panel-agents -->
 
     <!-- ══ MAINNET PANEL ══ -->
     <div id="panel-live" class="tab-panel">
@@ -655,7 +701,7 @@ const fmtTte = sec => {
 // ── Tab switching ──────────────────────────────────────────────
 function switchTab(tab) {
   currentTab = tab;
-  ['dry', 'charts', 'history', 'live', 'tuner'].forEach(t => {
+  ['dry', 'charts', 'history', 'agents', 'live', 'tuner'].forEach(t => {
     $('tbtn-' + t).classList.toggle('active', t === tab);
     $('panel-' + t).classList.toggle('active', t === tab);
     const meta = $('tmeta-' + t);
@@ -769,10 +815,70 @@ function renderOpenTrades(trades) {
         <span class="t-badge ${bc}">${lbl}</span>
         <span class="t-size">$${fmt(t.size_usdc)}</span>
         <span class="t-price">${Number(t.price_paid || 0).toFixed(1)}%</span>
-        <span class="t-oid">${esc(String(t.market_id || ''))}</span>
+        <span class="t-oid" title="${esc(String(t.market_id || ''))}">${esc(String(t.agent_id || ''))}</span>
         <span class="t-oid">${esc(String(t.question || ''))}</span>
       </div>`;
     }).join('');
+}
+
+async function postJson(url, body) {
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body || {})});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return await r.json();
+}
+function agentPromote(id) { return postJson('/api/agents', {action:'promote', agent_id:id}).catch(()=>{}); }
+function agentDrop(id) { return postJson('/api/agents', {action:'drop', agent_id:id}).catch(()=>{}); }
+function agentSpawn() { return postJson('/api/agents', {action:'spawn'}).catch(()=>{}); }
+function agentClearPrimary() { return postJson('/api/agents', {action:'clear_primary'}).catch(()=>{}); }
+function agentToggleEvolution() { return postJson('/api/agents', {action:'toggle_evolution'}).catch(()=>{}); }
+
+function renderAgents(multi) {
+  const el = $('agent-list');
+  const meta = $('agents-meta');
+  if (!el) return;
+  if (!multi || !multi.agents) {
+    el.innerHTML = '<div class="no-data">Multi-agent disabled</div>';
+    if (meta) meta.textContent = 'disabled';
+    $('tmeta-agents').textContent = '0 agents';
+    return;
+  }
+  const agents = multi.agents || [];
+  const perf = multi.perf || {};
+  const primary = String(multi.primary_agent_id || '');
+  const evo = !!multi.evolution_enabled;
+  if (meta) meta.textContent = `${agents.length} agent${agents.length!==1?'s':''} · primary=${primary||'—'} · evolve=${evo?'ON':'OFF'}`;
+  $('tmeta-agents').textContent = `${agents.length} agent${agents.length!==1?'s':''}`;
+  if (!agents.length) {
+    el.innerHTML = '<div class="no-data">No agents yet</div>';
+    return;
+  }
+  el.innerHTML = agents.map(a => {
+    const id = String(a.agent_id || '');
+    const p = perf[id] || {};
+    const pnl = Number(p.realized_pnl || 0);
+    const pc = pnl >= 0 ? 'pos' : 'neg';
+    const chip = id && id === primary ? '<span class="a-chip primary">PRIMARY</span>' : '';
+    const btns = `
+      <button class="btn green" onclick="agentPromote('${esc(id)}')">PROMOTE</button>
+      <button class="btn red" onclick="agentDrop('${esc(id)}')">DROP</button>
+    `;
+    return `<div class="agent-row">
+      <span class="a-id">${esc(id)}</span>
+      <span class="a-name" title="${esc(String(a.name||''))}">${esc(String(a.name||''))}${chip}</span>
+      <span class="a-brain">${esc(String(a.brain||''))}</span>
+      <span class="a-stat">${Number(p.trades||0)}</span>
+      <span class="a-stat">${Number(p.resolved||0)}</span>
+      <span class="a-stat a-pnl ${pc}">${pnl>=0?'+':''}$${fmt(Math.abs(pnl),2)}</span>
+      <span class="a-stat">${Number(a.min_edge||0).toFixed(3)}</span>
+      <span class="a-stat">${Number(a.max_size_usdc||0).toFixed(0)}</span>
+      <span class="a-stat">${Number(a.min_order_size_usdc||0).toFixed(0)}</span>
+      <span class="a-stat">${Number(a.edge_full_scale||0).toFixed(3)}</span>
+    </div>
+    <div class="agent-actions" style="border-bottom:none; padding-top:0; padding-bottom:10px">
+      <div class="t-dim" style="flex:1">w1=${Number(a.w_m1||0).toFixed(1)} w5=${Number(a.w_m5||0).toFixed(1)} vol=${Number(a.w_vol||0).toFixed(1)}</div>
+      ${btns}
+    </div>`;
+  }).join('');
 }
 
 function renderHistory(trades) {
@@ -1106,6 +1212,9 @@ async function poll() {
     // History tab
     renderHistory(d.performance?.resolved_trades);
 
+    // Agents tab
+    renderAgents(d.multi_agent);
+
     // Mainnet tab
     renderWallet(d.wallet, d.dry_run);
     renderLiveTrades(d.live_trades, d.dry_run);
@@ -1151,6 +1260,69 @@ async def handle_state(request: web.Request) -> web.Response:
     return web.json_response(STATE.to_dict())
 
 
+def _local_only(request: web.Request) -> bool:
+    r = (request.remote or "").strip()
+    return (r in ("", "127.0.0.1", "::1"))
+
+
+async def handle_agents(request: web.Request) -> web.Response:
+    """Local-only agent pool controls (used by the AGENTS tab)."""
+    if not _local_only(request):
+        return web.json_response({"ok": False, "error": "forbidden"}, status=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    action = str(body.get("action") or "").strip().lower()
+    agent_id = str(body.get("agent_id") or "").strip()
+
+    pool = getattr(STATE, "_agent_pool", None)  # type: ignore[attr-defined]
+    if not pool:
+        return web.json_response({"ok": False, "error": "no_pool"}, status=400)
+
+    perf = STATE.agent_perf or {}
+
+    def pnl(aid: str) -> float:
+        try:
+            return float((perf.get(aid) or {}).get("realized_pnl", 0.0))
+        except Exception:
+            return 0.0
+
+    if action == "promote":
+        if not any(a.agent_id == agent_id for a in pool):
+            return web.json_response({"ok": False, "error": "unknown_agent"}, status=400)
+        STATE.primary_agent_id = agent_id
+    elif action == "clear_primary":
+        STATE.primary_agent_id = ""
+    elif action == "toggle_evolution":
+        STATE.agent_evolution_enabled = not bool(getattr(STATE, "agent_evolution_enabled", True))
+    elif action == "drop":
+        if len(pool) <= 1:
+            return web.json_response({"ok": False, "error": "cannot_drop_last"}, status=400)
+        pool2 = [a for a in pool if a.agent_id != agent_id]
+        if len(pool2) == len(pool):
+            return web.json_response({"ok": False, "error": "unknown_agent"}, status=400)
+        if STATE.primary_agent_id == agent_id:
+            STATE.primary_agent_id = ""
+        pool = pool2
+        STATE._agent_pool = pool  # type: ignore[attr-defined]
+        STATE.agents = [to_public_dict(a) for a in pool]
+    elif action == "spawn":
+        base = max(pool, key=lambda a: pnl(a.agent_id))
+        child = mutate(base)
+        pool.append(child)
+        pool = sorted(pool, key=lambda a: pnl(a.agent_id), reverse=True)[:MAX_AGENTS]
+        STATE._agent_pool = pool  # type: ignore[attr-defined]
+        STATE.agents = [to_public_dict(a) for a in pool]
+        STATE.agent_perf.setdefault(child.agent_id, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+    else:
+        return web.json_response({"ok": False, "error": "unknown_action"}, status=400)
+
+    return web.json_response({"ok": True, "multi_agent": STATE.to_dict().get("multi_agent")})
+
+
 async def handle_stream(request: web.Request) -> web.StreamResponse:
     """SSE endpoint — streams new log lines as they arrive."""
     response = web.StreamResponse()
@@ -1181,6 +1353,7 @@ async def start_server() -> web.AppRunner:
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/state", handle_state)
     app.router.add_get("/api/stream", handle_stream)
+    app.router.add_post("/api/agents", handle_agents)
 
     runner = web.AppRunner(app)
     await runner.setup()

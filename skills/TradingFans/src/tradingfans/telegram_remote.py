@@ -29,6 +29,7 @@ import aiohttp
 
 from .state import STATE
 from .tuner import SPECS, persist_current, set_param
+from .agents import MAX_AGENTS, mutate, to_public_dict
 
 
 def _api_base(token: str) -> str:
@@ -222,6 +223,11 @@ async def telegram_loop() -> None:
                             "/pause | /resume\n"
                             "/tuner on|off\n"
                             "/set <key> <value>\n"
+                            "/agents [list]\n"
+                            "/agents promote <agent_id>\n"
+                            "/agents drop <agent_id>\n"
+                            "/agents spawn\n"
+                            "/unpair\n"
                             f"keys: {keys}"
                         )
                         _log_remote_event("cmd", "help", chat_id=incoming_chat_id)
@@ -259,6 +265,86 @@ async def telegram_loop() -> None:
                         else:
                             await _send(session, token, int(remote["allowed_chat_id"]), f"ERR {msg_txt}")
                             _log_remote_event("cmd", f"set_fail {key} ({msg_txt})", chat_id=incoming_chat_id)
+                    elif cmd == "unpair":
+                        try:
+                            cfg.pop("telegram_chat_id", None)
+                            _save_cfg(cfg)
+                        except Exception:
+                            pass
+                        remote["allowed_chat_id"] = None
+                        remote["status"] = "PAIRING"
+                        await _send(session, token, incoming_chat_id, "Unpaired. Send /pair to authorize again.")
+                        _log_remote_event("cmd", "unpair", chat_id=incoming_chat_id)
+                    elif cmd == "agents":
+                        sub = (args[0].lower() if args else "list")
+                        pool = getattr(STATE, "_agent_pool", None)  # type: ignore[attr-defined]
+                        if not pool:
+                            await _send(session, token, int(remote["allowed_chat_id"]), "No agent pool yet.")
+                            continue
+
+                        if sub in ("list", "ls"):
+                            perf = STATE.agent_perf or {}
+                            lines = []
+                            lines.append(f"Agents (max {MAX_AGENTS}) multi_agent={'ON' if STATE.multi_agent_enabled else 'OFF'} primary={getattr(STATE,'primary_agent_id','') or '-'}")
+                            for a in pool:
+                                p = perf.get(a.agent_id, {}) if isinstance(perf, dict) else {}
+                                lines.append(
+                                    f"{a.agent_id} {a.name} brain={a.brain} "
+                                    f"trades={int(p.get('trades',0))} resolved={int(p.get('resolved',0))} pnl=${float(p.get('realized_pnl',0.0)):.2f} "
+                                    f"min_edge={a.min_edge:.3f} max=${a.max_size_usdc:.0f}"
+                                )
+                            await _send(session, token, int(remote["allowed_chat_id"]), "\n".join(lines)[:3900])
+                            _log_remote_event("cmd", "agents list", chat_id=incoming_chat_id)
+                            continue
+
+                        if sub == "promote" and len(args) >= 2:
+                            aid = args[1].strip()
+                            if not any(a.agent_id == aid for a in pool):
+                                await _send(session, token, int(remote["allowed_chat_id"]), f"Unknown agent_id: {aid}")
+                                continue
+                            STATE.primary_agent_id = aid  # type: ignore[attr-defined]
+                            await _send(session, token, int(remote["allowed_chat_id"]), f"Promoted {aid}. All markets will route to this agent.")
+                            _log_remote_event("cmd", f"agents promote {aid}", chat_id=incoming_chat_id)
+                            continue
+
+                        if sub == "drop" and len(args) >= 2:
+                            aid = args[1].strip()
+                            if len(pool) <= 1:
+                                await _send(session, token, int(remote["allowed_chat_id"]), "Refusing to drop last agent.")
+                                continue
+                            pool2 = [a for a in pool if a.agent_id != aid]
+                            if len(pool2) == len(pool):
+                                await _send(session, token, int(remote["allowed_chat_id"]), f"Unknown agent_id: {aid}")
+                                continue
+                            if getattr(STATE, "primary_agent_id", "") == aid:  # type: ignore[attr-defined]
+                                STATE.primary_agent_id = ""  # type: ignore[attr-defined]
+                            STATE._agent_pool = pool2  # type: ignore[attr-defined]
+                            STATE.agents = [to_public_dict(a) for a in pool2]
+                            await _send(session, token, int(remote["allowed_chat_id"]), f"Dropped {aid}. Now {len(pool2)} agent(s).")
+                            _log_remote_event("cmd", f"agents drop {aid}", chat_id=incoming_chat_id)
+                            continue
+
+                        if sub == "spawn":
+                            # Spawn a bounded mutation from the current best agent (by realized pnl).
+                            perf = STATE.agent_perf or {}
+                            def _pnl(aid: str) -> float:
+                                try:
+                                    return float((perf.get(aid) or {}).get("realized_pnl", 0.0))
+                                except Exception:
+                                    return 0.0
+                            base = max(pool, key=lambda a: _pnl(a.agent_id))
+                            child = mutate(base)
+                            pool.append(child)
+                            # Keep top MAX_AGENTS by pnl (best agents survive).
+                            pool = sorted(pool, key=lambda a: _pnl(a.agent_id), reverse=True)[:MAX_AGENTS]
+                            STATE._agent_pool = pool  # type: ignore[attr-defined]
+                            STATE.agents = [to_public_dict(a) for a in pool]
+                            STATE.agent_perf.setdefault(child.agent_id, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+                            await _send(session, token, int(remote["allowed_chat_id"]), f"Spawned {child.agent_id} from {base.agent_id}. Pool={len(pool)}/{MAX_AGENTS}.")
+                            _log_remote_event("cmd", f"agents spawn {child.agent_id}", chat_id=incoming_chat_id)
+                            continue
+
+                        await _send(session, token, int(remote["allowed_chat_id"]), "Usage:\n/agents [list]\n/agents promote <id>\n/agents drop <id>\n/agents spawn")
                     else:
                         if cmd:
                             await _send(session, token, int(remote["allowed_chat_id"]), "Unknown command. Send /help")

@@ -48,7 +48,7 @@ try {
 }
 
 try {
-  $updates = Invoke-RestMethod -TimeoutSec 15 -Method Post ("https://api.telegram.org/bot{0}/getUpdates" -f $token) -Body (@{timeout=0} | ConvertTo-Json) -ContentType "application/json"
+  $updates = Invoke-RestMethod -TimeoutSec 15 -Method Get ("https://api.telegram.org/bot{0}/getUpdates?timeout=0" -f $token)
   if (-not $updates.ok) { throw "getUpdates returned ok=false" }
   $n = @($updates.result).Count
   Write-Host ("Updates available: {0}" -f $n)
