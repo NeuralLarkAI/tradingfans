@@ -592,6 +592,13 @@ body::before {
 
 <script>
 const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}[c]));
 let prevBtc = null, prevEth = null, lastLog = 0, fails = 0;
 let walletAddr = '';
 let currentTab = 'dry';
