@@ -15,7 +15,7 @@ function Import-DotEnv([string]$Path) {
     if ($line -eq '' -or $line.StartsWith('#')) { return }
     if ($line.StartsWith('export ')) { $line = $line.Substring(7).Trim() }
     if ($line -match '^([^=]+)=(.*)$') {
-      $name = $matches[1].Trim()
+      $name = $matches[1].Trim().TrimStart([char]0xFEFF)  # strip UTF-8 BOM if present
       $val = $matches[2].Trim()
       if (
         ($val.StartsWith('"') -and $val.EndsWith('"')) -or

@@ -595,6 +595,10 @@ body::before {
             <div class="wbal-val usdc-val" id="mn-usdc">—</div>
           </div>
           <div class="wbal">
+            <div class="wbal-lbl">Polymarket Balance</div>
+            <div class="wbal-val usdc-val" id="mn-poly">—</div>
+          </div>
+          <div class="wbal">
             <div class="wbal-lbl">Deployed (session)</div>
             <div class="wbal-val" id="mn-dep">—</div>
           </div>
@@ -982,6 +986,11 @@ function renderWallet(wallet, dryRun) {
     $('mn-usdc').textContent = '$' + fmt(wallet.usdc);
   } else {
     $('mn-usdc').textContent = 'Fetching...';
+  }
+  if (wallet.poly_collateral_usdc !== null && wallet.poly_collateral_usdc !== undefined) {
+    $('mn-poly').textContent = '$' + fmt(wallet.poly_collateral_usdc);
+  } else {
+    $('mn-poly').textContent = '—';
   }
   $('mn-dep').textContent = '$' + fmt(Number(wallet.live_deployed_usdc ?? 0));
   // Optional breakdown (native vs bridged)

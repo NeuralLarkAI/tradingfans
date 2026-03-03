@@ -99,7 +99,7 @@ def _maybe_load_dotenv() -> None:
                 if "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                k = k.strip()
+                k = k.strip().lstrip("\ufeff")
                 v = v.strip()
                 if not k or k in os.environ:
                     continue
@@ -403,7 +403,8 @@ async def _evaluate_market(
     # Live-mode wallet-based caps to prevent spending the whole wallet quickly.
     # These are soft constraints on top of per-agent max_size_usdc.
     if not STATE.dry_run:
-        wallet_usdc = STATE.wallet_usdc
+        # Use Polymarket collateral balance when available; fall back to on-chain wallet USDC.
+        wallet_usdc = STATE.poly_collateral_usdc if STATE.poly_collateral_usdc is not None else STATE.wallet_usdc
         reserve = _get_float_env("POLY_LIVE_WALLET_RESERVE_USDC", 20.0)
         trade_frac = _get_float_env("POLY_LIVE_TRADE_FRACTION", 0.05)      # max % of spendable per trade
         total_frac = _get_float_env("POLY_LIVE_TOTAL_FRACTION", 0.25)      # max % of spendable across open exposure
@@ -551,20 +552,30 @@ async def _fetch_wallet_balance() -> tuple[float | None, float | None]:
         return None, None
 
 
-async def wallet_poll_loop() -> None:
-    """Poll Polygon for wallet USDC/MATIC balance every 60 seconds."""
+async def wallet_poll_loop(clob: ClobClient) -> None:
+    """Poll Polygon wallet + Polymarket collateral balance every 60 seconds."""
     while True:
         usdc, matic = await _fetch_wallet_balance()
         if usdc is not None:
             STATE.wallet_usdc = usdc
         if matic is not None:
             STATE.wallet_matic = matic
+
+        try:
+            # Level-2 auth call to CLOB; this is what the Polymarket UI calls "balance".
+            col = clob.get_collateral_balance_usdc()
+            if col is not None:
+                STATE.poly_collateral_usdc = float(col)
+        except Exception:
+            pass
+
         if usdc is not None or matic is not None:
             log.debug(
-                "Wallet: USDC=%.2f (native=%.2f usdc.e=%.2f) MATIC=%.4f",
+                "Wallet: USDC=%.2f (native=%.2f usdc.e=%.2f) collateral=%.2f MATIC=%.4f",
                 float(STATE.wallet_usdc or 0.0),
                 float(getattr(STATE, "wallet_usdc_native", 0.0) or 0.0),
                 float(getattr(STATE, "wallet_usdc_e", 0.0) or 0.0),
+                float(getattr(STATE, "poly_collateral_usdc", 0.0) or 0.0),
                 float(STATE.wallet_matic or 0.0),
             )
         await asyncio.sleep(60)
@@ -911,7 +922,7 @@ async def main() -> None:
         name="trading-loop",
     )
     wallet_task = asyncio.create_task(
-        wallet_poll_loop(),
+        wallet_poll_loop(clob),
         name="wallet-poll",
     )
     tuner_task = asyncio.create_task(

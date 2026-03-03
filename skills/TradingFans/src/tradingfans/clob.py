@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 from py_clob_client.client import ClobClient as _ClobClient
 from py_clob_client.clob_types import OrderArgs
+from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 from py_clob_client.constants import POLYGON
 
 # In py-clob-client >= 0.20, Side is a plain string constant
@@ -139,6 +140,25 @@ class ClobClient:
         """Return midpoint price (implied YES probability) or None."""
         book = self.get_book(token_id)
         return book.mid if book else None
+
+    def get_collateral_balance_usdc(self) -> float | None:
+        """
+        Best-effort available collateral balance on Polymarket (USDC).
+        This is the balance shown in the Polymarket UI account and is the
+        correct reference for live trading capacity.
+        """
+        try:
+            res = self._client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+            # Typical response: {"balance":"10","allowance":"..."} (strings)
+            if isinstance(res, dict):
+                bal = res.get("balance") or res.get("available") or res.get("collateralBalance")
+                if bal is None:
+                    return None
+                return float(bal)
+            return None
+        except Exception as exc:
+            log.debug("get_collateral_balance_usdc failed: %s", exc)
+            return None
 
     # ── Write ─────────────────────────────────────────────────
 

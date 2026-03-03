@@ -92,6 +92,7 @@ class AgentState:
         self.wallet_usdc_e: float | None = None
         self.wallet_usdc_native: float | None = None
         self.wallet_matic: float | None = None
+        self.poly_collateral_usdc: float | None = None
 
         # Raw log lines for the live log panel
         self.log_lines: deque[str] = deque(maxlen=600)
@@ -270,6 +271,7 @@ class AgentState:
                 "usdc_e":  round(self.wallet_usdc_e, 2) if self.wallet_usdc_e is not None else None,
                 "usdc_native": round(self.wallet_usdc_native, 2) if self.wallet_usdc_native is not None else None,
                 "matic":   round(self.wallet_matic, 4) if self.wallet_matic is not None else None,
+                "poly_collateral_usdc": round(self.poly_collateral_usdc, 2) if self.poly_collateral_usdc is not None else None,
                 "live_deployed_usdc": round(float(getattr(self, "live_deployed", 0.0)), 2),
             },
             # ── Autotuner ───────────────────────────────────────────────
