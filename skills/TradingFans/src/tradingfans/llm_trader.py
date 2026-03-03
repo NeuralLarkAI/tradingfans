@@ -35,16 +35,17 @@ _cache: dict[str, tuple[float, LLMDecision]] = {}
 _call_ts: deque[float] = deque(maxlen=200)
 
 
-def enabled(*, dry_run: bool) -> bool:
+def enabled(*, dry_run: bool, live_ok: bool = False) -> bool:
     env = os.environ.get("POLY_LLM_TRADER", "").strip()
     if env != "":
         on = env in ("1", "true", "True", "yes", "YES", "on", "ON")
     else:
-        # Default: ON in DRY RUN (if an OpenAI key exists), OFF in live.
-        on = bool(dry_run)
+        # Default: ON in DRY RUN (if an OpenAI key exists).
+        # LIVE requires an explicit toggle (live_ok) to avoid accidental spend.
+        on = bool(dry_run or live_ok)
     if not on:
         return False
-    if not dry_run and os.environ.get("POLY_LLM_TRADER_LIVE", "0") != "1":
+    if not dry_run and (not live_ok) and os.environ.get("POLY_LLM_TRADER_LIVE", "0") != "1":
         return False
     return bool(os.environ.get("OPENAI_API_KEY", "").strip())
 

@@ -60,6 +60,7 @@ class AgentState:
         self.stop_requested: bool = False
         # Live execution mode: allow trading even when 5m books are wide/empty.
         self.live_wide_book_enabled: bool = False
+        self.llm_live_enabled: bool = False
         self.max_size: float = 50.0
         self.symbol_filter: str = "ALL"
         self.poll_interval: float = 5.0
@@ -91,11 +92,16 @@ class AgentState:
 
         # Mainnet wallet
         self.wallet_address: str = ""
+        # Address derived from POLY_PRIVATE_KEY (the account actually trading on CLOB).
+        self.clob_address: str = ""
         self.wallet_usdc: float | None = None
         self.wallet_usdc_e: float | None = None
         self.wallet_usdc_native: float | None = None
         self.wallet_matic: float | None = None
         self.poly_collateral_usdc: float | None = None
+        self.poly_allowances: dict[str, float] = {}
+        self.poly_last_sync_epoch: float | None = None
+        self.poly_last_sync_error: str = ""
 
         # Raw log lines for the live log panel
         self.log_lines: deque[str] = deque(maxlen=600)
@@ -218,6 +224,7 @@ class AgentState:
             "paused": self.paused,
             "stop_requested": self.stop_requested,
             "live_wide_book_enabled": bool(getattr(self, "live_wide_book_enabled", False)),
+            "llm_live_enabled": bool(getattr(self, "llm_live_enabled", False)),
             "min_order_size": self.min_order_size,
             "edge_full_scale": self.edge_full_scale,
             "max_time_to_expiry": self.max_time_to_expiry,
@@ -272,11 +279,15 @@ class AgentState:
             # ── Mainnet wallet ────────────────────────────────────
             "wallet": {
                 "address": self.wallet_address,
+                "clob_address": self.clob_address,
                 "usdc":    round(self.wallet_usdc, 2)  if self.wallet_usdc  is not None else None,
                 "usdc_e":  round(self.wallet_usdc_e, 2) if self.wallet_usdc_e is not None else None,
                 "usdc_native": round(self.wallet_usdc_native, 2) if self.wallet_usdc_native is not None else None,
                 "matic":   round(self.wallet_matic, 4) if self.wallet_matic is not None else None,
                 "poly_collateral_usdc": round(self.poly_collateral_usdc, 2) if self.poly_collateral_usdc is not None else None,
+                "poly_allowances": dict(self.poly_allowances),
+                "poly_last_sync_epoch": self.poly_last_sync_epoch,
+                "poly_last_sync_error": self.poly_last_sync_error,
                 "live_deployed_usdc": round(float(getattr(self, "live_deployed", 0.0)), 2),
             },
             # ── Autotuner ───────────────────────────────────────────────

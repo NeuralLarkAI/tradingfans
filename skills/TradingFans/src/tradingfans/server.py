@@ -371,6 +371,7 @@ body::before {
 .wallet-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .wallet-lbl { font-size: 8px; letter-spacing: 0.2em; color: var(--dim); text-transform: uppercase; }
 .wallet-addr-txt { font-size: 11px; color: var(--white2); word-break: break-all; margin-bottom: 12px; }
+.wallet-addr-sub { font-size: 10px; color: var(--dim); margin-top: -8px; margin-bottom: 12px; word-break: break-all; }
 .wallet-bals { display: flex; gap: 28px; }
 .wbal { display: flex; flex-direction: column; gap: 3px; }
 .wbal-lbl { font-size: 8px; letter-spacing: 0.16em; color: var(--dim); text-transform: uppercase; }
@@ -432,6 +433,10 @@ body::before {
     <label class="mode-toggle wide" title="LIVE wide-book mode: bypass spread/depth checks and place mid+pad limit orders (risky)">
       <span class="mt-wide">WIDE</span>
       <input id="wide-toggle" type="checkbox" onchange="toggleWide()">
+    </label>
+    <label class="mode-toggle wide" title="Enable LLM agent decisions in LIVE (requires OPENAI_API_KEY; risky)">
+      <span class="mt-wide">LLM</span>
+      <input id="llm-toggle" type="checkbox" onchange="toggleLLM()">
     </label>
     <button class="ctl-btn pause" id="btn-pause" onclick="togglePause()">PAUSE</button>
     <button class="ctl-btn stop" onclick="hardStop()">STOP</button>
@@ -624,9 +629,13 @@ body::before {
       <div id="wallet-card">
         <div class="wallet-top">
           <span class="wallet-lbl">Wallet Address (Polygon)</span>
-          <button class="copy-btn" onclick="copyWallet()">COPY ADDRESS</button>
+          <div style="display:flex;gap:8px">
+            <button class="copy-btn" id="copy-funder-btn" onclick="copyWallet()">COPY FUNDING</button>
+            <button class="copy-btn" id="copy-trading-btn" onclick="copyTrading()">COPY TRADING</button>
+          </div>
         </div>
         <div class="wallet-addr-txt" id="mn-addr">loading...</div>
+        <div class="wallet-addr-sub" id="mn-clob-row">Trading (CLOB): <span id="mn-clob-addr">—</span></div>
         <div class="wallet-bals">
           <div class="wbal">
             <div class="wbal-lbl">USDC Balance</div>
@@ -729,9 +738,11 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
 }[c]));
 let prevBtc = null, prevEth = null, lastLog = 0, fails = 0;
 let walletAddr = '';
+let tradingAddr = '';
 let currentTab = 'dry';
 let paused = false;
 let wideLive = false;
+let llmLive = false;
 
 const fmt  = (n, d=2) => Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const fmtD = (n, d=2) => (n >= 0 ? '+' : '') + '$' + fmt(Math.abs(n), d);
@@ -1019,8 +1030,16 @@ function renderCharts(state) {
 function renderWallet(wallet, dryRun) {
   if (!wallet) return;
   walletAddr = wallet.address || '';
+  tradingAddr = wallet.clob_address || '';
   const addrEl = $('mn-addr');
   addrEl.textContent = walletAddr || 'Not configured';
+  const clobRow = $('mn-clob-row');
+  const clobEl  = $('mn-clob-addr');
+  if (clobEl) clobEl.textContent = tradingAddr || '—';
+  if (clobRow) {
+    const same = walletAddr && tradingAddr && walletAddr.toLowerCase() === tradingAddr.toLowerCase();
+    clobRow.style.display = (!tradingAddr || same) ? 'none' : '';
+  }
 
   if (wallet.usdc !== null && wallet.usdc !== undefined) {
     $('mn-usdc').textContent = '$' + fmt(wallet.usdc);
@@ -1046,7 +1065,9 @@ function renderWallet(wallet, dryRun) {
     $('mn-matic').textContent = '—';
   }
 
-  const hasBalance = wallet.usdc !== null && wallet.usdc > 0;
+  const hasWallet = wallet.usdc !== null && wallet.usdc > 0;
+  const poly = wallet.poly_collateral_usdc;
+  const hasPoly = poly !== null && poly !== undefined && Number(poly) > 0;
   const statusEl   = $('mn-status');
   const noticeEl   = $('mn-notice');
 
@@ -1057,16 +1078,25 @@ function renderWallet(wallet, dryRun) {
     noticeEl.innerHTML   = `<b>DRY RUN MODE ACTIVE</b> — Live orders are disabled. Wallet is read-only.<br>
       To go live: restart the agent without <code>--dry-run</code> and ensure your wallet has USDC loaded.<br>
       To fund your wallet: send USDC on Polygon to the address above, then restart.`;
-  } else if (!hasBalance) {
+  } else if (!hasWallet) {
     statusEl.textContent = 'NEEDS FUNDS';
     statusEl.style.color = 'var(--orange)';
     noticeEl.className   = 'mode-notice';
     noticeEl.innerHTML   = '<b style="color:var(--orange)">LOW BALANCE</b> — Send USDC on Polygon to the wallet address above to begin trading.';
+  } else if (poly !== null && poly !== undefined && Number(poly) <= 0) {
+    statusEl.textContent = 'NEEDS POLY DEPOSIT';
+    statusEl.style.color = 'var(--orange)';
+    noticeEl.className   = 'mode-notice';
+    const err = wallet.poly_last_sync_error ? `<br><span class="t-dim">sync: ${esc(String(wallet.poly_last_sync_error))}</span>` : '';
+    noticeEl.innerHTML = `<b style="color:var(--orange)">POLYMARKET BALANCE IS $0</b> — Live trading uses your Polymarket collateral balance, not your on-chain wallet.<br>
+      Deposit USDC into your Polymarket account (same trading address) so CLOB shows a non-zero balance.${err}`;
   } else {
-    statusEl.textContent = '● LIVE';
-    statusEl.style.color = 'var(--green)';
-    noticeEl.className   = 'mode-notice live';
-    noticeEl.innerHTML   = '<b>LIVE TRADING ACTIVE</b> — Real orders are being placed on Polymarket.';
+    statusEl.textContent = hasPoly ? '● LIVE' : 'SYNCING…';
+    statusEl.style.color = hasPoly ? 'var(--green)' : 'var(--dim)';
+    noticeEl.className   = hasPoly ? 'mode-notice live' : 'mode-notice';
+    noticeEl.innerHTML   = hasPoly
+      ? '<b>LIVE TRADING ACTIVE</b> — Real orders are being placed on Polymarket.'
+      : '<b>SYNCING POLYMARKET</b> — Waiting for Polymarket collateral balance to load.';
   }
 }
 
@@ -1199,7 +1229,18 @@ function renderRemoteEvents(events) {
 function copyWallet() {
   if (!walletAddr) return;
   navigator.clipboard.writeText(walletAddr).then(() => {
-    const btn = document.querySelector('.copy-btn');
+    const btn = $('copy-funder-btn') || document.querySelector('.copy-btn');
+    const orig = btn.textContent;
+    btn.textContent = 'COPIED ✓';
+    btn.style.color = 'var(--green)';
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 1500);
+  });
+}
+
+function copyTrading() {
+  if (!tradingAddr) return;
+  navigator.clipboard.writeText(tradingAddr).then(() => {
+    const btn = $('copy-trading-btn') || document.querySelector('.copy-btn');
     const orig = btn.textContent;
     btn.textContent = 'COPIED ✓';
     btn.style.color = 'var(--green)';
@@ -1251,6 +1292,9 @@ async function poll() {
     wideLive = !!d.live_wide_book_enabled;
     const wt = $('wide-toggle');
     if (wt) wt.checked = wideLive;
+    llmLive = !!d.llm_live_enabled;
+    const lt = $('llm-toggle');
+    if (lt) lt.checked = llmLive;
 
     // Tab live button label
     $('tbtn-live').querySelector('.tb-dot').style.background = d.dry_run ? '' : 'var(--green)';
@@ -1329,6 +1373,14 @@ async function toggleWide() {
     const wt = $('wide-toggle');
     const en = !!(wt && wt.checked);
     await postControl('set_wide_book', {enabled: en});
+  } catch {}
+}
+
+async function toggleLLM() {
+  try {
+    const lt = $('llm-toggle');
+    const en = !!(lt && lt.checked);
+    await postControl('set_llm_live', {enabled: en});
   } catch {}
 }
 
@@ -1466,6 +1518,11 @@ async def handle_control(request: web.Request) -> web.Response:
         enabled = bool(body.get("enabled"))
         STATE.live_wide_book_enabled = bool(enabled)
         return web.json_response({"ok": True, "live_wide_book_enabled": STATE.live_wide_book_enabled})
+
+    if action in ("set_llm_live", "llm_live"):
+        enabled = bool(body.get("enabled"))
+        STATE.llm_live_enabled = bool(enabled)
+        return web.json_response({"ok": True, "llm_live_enabled": STATE.llm_live_enabled})
 
     return web.json_response({"ok": False, "error": "unknown_action"}, status=400)
 

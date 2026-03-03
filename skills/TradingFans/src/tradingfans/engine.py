@@ -317,7 +317,8 @@ async def _evaluate_market(
         log.info("RISK FAIL | %s | %s", market.question[:40], " | ".join(rc.reasons))
         return None
 
-    if agent.brain == "llm" and llm_enabled(dry_run=STATE.dry_run):
+    llm_ok = llm_enabled(dry_run=STATE.dry_run, live_ok=bool(getattr(STATE, "llm_live_enabled", False)))
+    if agent.brain == "llm" and llm_ok:
         # Use the quant feature extractor to compute m1/m5/vol1, then let the LLM estimate fair p_model.
         feats = decision_compute(window=window, implied_yes=implied_yes, min_edge=0.0, w_m1=0.0, w_m5=0.0, w_vol=0.0)
         llm_d = await llm_decide(
@@ -345,6 +346,10 @@ async def _evaluate_market(
             confidence=abs(edge),
             reason=str(llm_d.reason),
         )
+        try:
+            log.info("LLM | action=%s p_model=%.3f reason=%s", llm_d.action, p_model, str(llm_d.reason)[:140])
+        except Exception:
+            pass
     else:
         decision = decision_compute(
             window=window,
@@ -385,30 +390,35 @@ async def _evaluate_market(
     if decision.signal == "NO_TRADE":
         return None
 
+    min_order_req = float(agent.min_order_size_usdc) if STATE.dry_run else _get_float_env("POLY_LIVE_MIN_ORDER_USDC", 1.0)
     size = max(
         _size_usdc(
             decision.edge,
             float(agent.max_size_usdc),
             edge_full_scale=float(agent.edge_full_scale),
         ),
-        float(agent.min_order_size_usdc),
+        float(min_order_req),
     )
-    if size < float(agent.min_order_size_usdc):
+    if size < float(min_order_req):
         log.debug(
             "Order size %.2f USDC < minimum %.2f — skipping.",
             size,
-            float(agent.min_order_size_usdc),
+            float(min_order_req),
         )
         return None
 
     # Live-mode wallet-based caps to prevent spending the whole wallet quickly.
     # These are soft constraints on top of per-agent max_size_usdc.
     if not STATE.dry_run:
+        # If Polymarket collateral is known and empty, don't bother placing (it will fail).
+        if STATE.poly_collateral_usdc is not None and float(STATE.poly_collateral_usdc) <= 0.0:
+            log.info("RISK FAIL | %s | polymarket_collateral=0", market.question[:40])
+            return None
         # Use Polymarket collateral balance when available; fall back to on-chain wallet USDC.
         wallet_usdc = STATE.poly_collateral_usdc if STATE.poly_collateral_usdc is not None else STATE.wallet_usdc
-        reserve = _get_float_env("POLY_LIVE_WALLET_RESERVE_USDC", 20.0)
-        trade_frac = _get_float_env("POLY_LIVE_TRADE_FRACTION", 0.05)      # max % of spendable per trade
-        total_frac = _get_float_env("POLY_LIVE_TOTAL_FRACTION", 0.25)      # max % of spendable across open exposure
+        reserve = _get_float_env("POLY_LIVE_WALLET_RESERVE_USDC", 1.0)
+        trade_frac = _get_float_env("POLY_LIVE_TRADE_FRACTION", 0.20)      # max % of spendable per trade
+        total_frac = _get_float_env("POLY_LIVE_TOTAL_FRACTION", 0.50)      # max % of spendable across open exposure
         if wallet_usdc is not None:
             spendable = max(0.0, float(wallet_usdc) - float(reserve))
             max_trade = max(0.0, spendable * max(0.0, min(1.0, trade_frac)))
@@ -417,7 +427,7 @@ async def _evaluate_market(
                 log.info("RISK FAIL | %s | wallet_spendable<=0", market.question[:40])
                 return None
             size = min(size, max_trade if max_trade > 0 else size, spendable)
-            if size < float(agent.min_order_size_usdc):
+            if size < float(min_order_req):
                 log.info("RISK FAIL | %s | wallet_cap<size", market.question[:40])
                 return None
             if (float(getattr(STATE, "live_deployed", 0.0)) + size) > (max_total + 1e-6):
@@ -592,13 +602,32 @@ async def wallet_poll_loop(clob: ClobClient) -> None:
         if matic is not None:
             STATE.wallet_matic = matic
 
+        # Level-2 auth calls to CLOB; this is what the Polymarket UI calls "balance".
         try:
-            # Level-2 auth call to CLOB; this is what the Polymarket UI calls "balance".
-            col = clob.get_collateral_balance_usdc()
-            if col is not None:
-                STATE.poly_collateral_usdc = float(col)
-        except Exception:
-            pass
+            # If we have on-chain USDC but collateral is still empty, try to trigger a refresh.
+            if (not STATE.dry_run) and float(STATE.wallet_usdc or 0.0) > 0 and float(STATE.poly_collateral_usdc or 0.0) <= 0:
+                try:
+                    clob.refresh_collateral_and_allowance()
+                except Exception:
+                    pass
+
+            bal = clob.get_balance_allowance() or {}
+            bal_str = bal.get("balance") if isinstance(bal, dict) else None
+            if bal_str is not None:
+                STATE.poly_collateral_usdc = float(bal_str)
+            allowances = bal.get("allowances") if isinstance(bal, dict) else None
+            if isinstance(allowances, dict):
+                out: dict[str, float] = {}
+                for k, v in allowances.items():
+                    try:
+                        out[str(k)] = float(v)
+                    except Exception:
+                        continue
+                STATE.poly_allowances = out
+            STATE.poly_last_sync_epoch = time.time()
+            STATE.poly_last_sync_error = ""
+        except Exception as exc:
+            STATE.poly_last_sync_error = str(exc)[:200]
 
         if usdc is not None or matic is not None:
             log.debug(
@@ -890,9 +919,6 @@ async def main() -> None:
     log.info("  MaxTTE  : %.0fs", STATE.max_time_to_expiry)
     log.info("=" * 60)
 
-    # Load wallet address into STATE for the dashboard
-    STATE.wallet_address = os.environ.get("POLY_FUNDER", "").strip()
-
     # Load tuner config into STATE (and possibly enable tuning)
     init_from_config(dry_run=dry)
 
@@ -925,6 +951,16 @@ async def main() -> None:
     spot  = SpotFeed()
     clob  = ClobClient()
     llm   = LLMAdvisor()
+
+    # Wallet / trading addresses for the dashboard
+    configured_wallet = os.environ.get("POLY_FUNDER", "").strip()
+    STATE.wallet_address = configured_wallet or str(getattr(clob, "funder_address", "") or "")
+    STATE.clob_address = str(getattr(clob, "address", "") or "")
+    try:
+        if STATE.wallet_address and STATE.clob_address and STATE.wallet_address.lower() != STATE.clob_address.lower():
+            log.warning("Address mismatch: POLY_FUNDER=%s but POLY_PRIVATE_KEY=%s", STATE.wallet_address, STATE.clob_address)
+    except Exception:
+        pass
 
     # Graceful shutdown
     loop = asyncio.get_running_loop()

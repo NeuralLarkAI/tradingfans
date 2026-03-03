@@ -58,13 +58,43 @@ class OrderBook:
 
 # ── Client factory ────────────────────────────────────────────
 
-def _make_clob_client() -> _ClobClient:
-    private_key = os.environ["POLY_PRIVATE_KEY"].strip()
-    if not private_key.startswith("0x"):
-        private_key = "0x" + private_key
+def _normalize_privkey(k: str) -> str:
+    k2 = (k or "").strip()
+    if not k2.startswith("0x"):
+        k2 = "0x" + k2
+    return k2
+
+
+def _derive_address_from_privkey(private_key: str) -> str:
+    # eth_account is a transitive dependency of py-clob-client in most installs.
+    from eth_account import Account  # type: ignore[import-not-found]
+
+    return str(Account.from_key(private_key).address)
+
+
+def _make_clob_client() -> tuple[_ClobClient, str, str]:
+    private_key = _normalize_privkey(os.environ["POLY_PRIVATE_KEY"])
+    derived_addr = _derive_address_from_privkey(private_key)
 
     chain_id = int(os.environ.get("POLY_CHAIN_ID", str(POLYGON)))
-    funder = os.environ["POLY_FUNDER"].strip()
+    configured_funder = os.environ.get("POLY_FUNDER", "").strip()
+    override_funder = os.environ.get("POLY_CLOB_FUNDER", "").strip()
+
+    # CLOB auth (and balance/allowance) is tied to the account derived from POLY_PRIVATE_KEY.
+    # Using a mismatched funder address is a common source of confusion where the UI shows
+    # funds on one wallet, while the CLOB account queried by the bot is different.
+    if override_funder:
+        funder = override_funder
+    elif configured_funder:
+        if configured_funder.lower() != derived_addr.lower():
+            log.warning(
+                "POLY_FUNDER (%s) does not match POLY_PRIVATE_KEY address (%s); using derived address for CLOB auth.",
+                configured_funder,
+                derived_addr,
+            )
+        funder = derived_addr
+    else:
+        funder = derived_addr
 
     client = _ClobClient(
         host="https://clob.polymarket.com",
@@ -73,7 +103,7 @@ def _make_clob_client() -> _ClobClient:
         funder=funder,
     )
     client.set_api_creds(client.create_or_derive_api_creds())
-    return client
+    return client, derived_addr, funder
 
 
 def _parse_levels(raw_levels: list) -> list[PriceLevel]:
@@ -101,7 +131,7 @@ class ClobClient:
     """Thin async-friendly wrapper around py_clob_client.ClobClient."""
 
     def __init__(self) -> None:
-        self._client = _make_clob_client()
+        self._client, self.address, self.funder_address = _make_clob_client()
         log.info("ClobClient: authenticated against Polymarket CLOB.")
 
     # ── Read ──────────────────────────────────────────────────
@@ -158,6 +188,27 @@ class ClobClient:
             return None
         except Exception as exc:
             log.debug("get_collateral_balance_usdc failed: %s", exc)
+            return None
+
+    def refresh_collateral_and_allowance(self) -> dict | None:
+        """
+        Ask Polymarket to refresh collateral balance/allowance state (level-2 auth).
+        Returns raw response dict if available.
+        """
+        try:
+            res = self._client.update_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+            return res if isinstance(res, dict) else None
+        except Exception as exc:
+            log.debug("refresh_collateral_and_allowance failed: %s", exc)
+            return None
+
+    def get_balance_allowance(self) -> dict | None:
+        """Raw balance+allowance payload from CLOB."""
+        try:
+            res = self._client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+            return res if isinstance(res, dict) else None
+        except Exception as exc:
+            log.debug("get_balance_allowance failed: %s", exc)
             return None
 
     # ── Write ─────────────────────────────────────────────────
