@@ -98,6 +98,11 @@ class AgentState:
         self.wallet_usdc_e: float | None = None
         self.wallet_usdc_native: float | None = None
         self.wallet_matic: float | None = None
+        # Trading address on-chain balances (CLOB signer wallet).
+        self.trading_wallet_usdc: float | None = None
+        self.trading_wallet_usdc_e: float | None = None
+        self.trading_wallet_usdc_native: float | None = None
+        self.trading_wallet_matic: float | None = None
         self.poly_collateral_usdc: float | None = None
         self.poly_allowances: dict[str, float] = {}
         self.poly_last_sync_epoch: float | None = None
@@ -284,6 +289,10 @@ class AgentState:
                 "usdc_e":  round(self.wallet_usdc_e, 2) if self.wallet_usdc_e is not None else None,
                 "usdc_native": round(self.wallet_usdc_native, 2) if self.wallet_usdc_native is not None else None,
                 "matic":   round(self.wallet_matic, 4) if self.wallet_matic is not None else None,
+                "trading_usdc": round(self.trading_wallet_usdc, 2) if self.trading_wallet_usdc is not None else None,
+                "trading_usdc_e": round(self.trading_wallet_usdc_e, 2) if self.trading_wallet_usdc_e is not None else None,
+                "trading_usdc_native": round(self.trading_wallet_usdc_native, 2) if self.trading_wallet_usdc_native is not None else None,
+                "trading_matic": round(self.trading_wallet_matic, 4) if self.trading_wallet_matic is not None else None,
                 "poly_collateral_usdc": round(self.poly_collateral_usdc, 2) if self.poly_collateral_usdc is not None else None,
                 "poly_allowances": dict(self.poly_allowances),
                 "poly_last_sync_epoch": self.poly_last_sync_epoch,

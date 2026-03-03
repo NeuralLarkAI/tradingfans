@@ -642,6 +642,10 @@ body::before {
             <div class="wbal-val usdc-val" id="mn-usdc">—</div>
           </div>
           <div class="wbal">
+            <div class="wbal-lbl">Trading Wallet USDC</div>
+            <div class="wbal-val usdc-val" id="mn-tusdc">—</div>
+          </div>
+          <div class="wbal">
             <div class="wbal-lbl">Polymarket Balance</div>
             <div class="wbal-val usdc-val" id="mn-poly">—</div>
           </div>
@@ -1045,6 +1049,11 @@ function renderWallet(wallet, dryRun) {
     $('mn-usdc').textContent = '$' + fmt(wallet.usdc);
   } else {
     $('mn-usdc').textContent = 'Fetching...';
+  }
+  if (wallet.trading_usdc !== null && wallet.trading_usdc !== undefined) {
+    $('mn-tusdc').textContent = '$' + fmt(wallet.trading_usdc);
+  } else {
+    $('mn-tusdc').textContent = '—';
   }
   if (wallet.poly_collateral_usdc !== null && wallet.poly_collateral_usdc !== undefined) {
     $('mn-poly').textContent = '$' + fmt(wallet.poly_collateral_usdc);

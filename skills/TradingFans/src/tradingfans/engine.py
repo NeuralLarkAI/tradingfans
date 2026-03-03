@@ -524,12 +524,11 @@ async def _evaluate_market(
 
 # ── Wallet balance polling ────────────────────────────────────
 
-async def _fetch_wallet_balance() -> tuple[float | None, float | None]:
-    """Fetch USDC and MATIC balance from Polygon via public RPC."""
+async def _fetch_wallet_balance(address: str) -> tuple[float | None, float | None, float | None, float | None]:
+    """Fetch USDC (total), USDC.e, native USDC, and MATIC from Polygon via public RPC."""
     import aiohttp as _aiohttp
-    address = STATE.wallet_address
     if not address:
-        return None, None
+        return None, None, None, None
 
     # Public RPCs can be flaky or rate-limited. Try a small fallback list.
     rpc_env = os.environ.get("POLY_POLYGON_RPC", "").strip()
@@ -579,33 +578,48 @@ async def _fetch_wallet_balance() -> tuple[float | None, float | None]:
                     usdc_native = await _erc20_balance(rpc, USDC_NATIVE_CONTRACT, 2)
                     matic = await _matic_balance(rpc)
                     usdc_total = float(usdc_e) + float(usdc_native)
-                    STATE.wallet_usdc_e = float(usdc_e)
-                    STATE.wallet_usdc_native = float(usdc_native)
-                    return usdc_total, matic
+                    return usdc_total, float(usdc_e), float(usdc_native), matic
                 except Exception as exc:
                     last_exc = exc
                     continue
             if last_exc:
                 raise last_exc
-            return None, None
+            return None, None, None, None
     except Exception as exc:
         log.debug("Wallet fetch failed: %s", exc)
-        return None, None
+        return None, None, None, None
 
 
 async def wallet_poll_loop(clob: ClobClient) -> None:
-    """Poll Polygon wallet + Polymarket collateral balance every 60 seconds."""
+    """Poll Polygon wallets + Polymarket collateral balance on an interval."""
     while True:
-        usdc, matic = await _fetch_wallet_balance()
+        # Funding wallet (POLY_FUNDER) balances.
+        usdc, usdc_e, usdc_native, matic = await _fetch_wallet_balance(STATE.wallet_address)
         if usdc is not None:
             STATE.wallet_usdc = usdc
+        if usdc_e is not None:
+            STATE.wallet_usdc_e = usdc_e
+        if usdc_native is not None:
+            STATE.wallet_usdc_native = usdc_native
         if matic is not None:
             STATE.wallet_matic = matic
+
+        # Trading/CLOB wallet (POLY_PRIVATE_KEY derived) balances.
+        t_addr = str(getattr(STATE, "clob_address", "") or "").strip()
+        t_usdc, t_usdc_e, t_usdc_native, t_matic = await _fetch_wallet_balance(t_addr)
+        if t_usdc is not None:
+            STATE.trading_wallet_usdc = t_usdc
+        if t_usdc_e is not None:
+            STATE.trading_wallet_usdc_e = t_usdc_e
+        if t_usdc_native is not None:
+            STATE.trading_wallet_usdc_native = t_usdc_native
+        if t_matic is not None:
+            STATE.trading_wallet_matic = t_matic
 
         # Level-2 auth calls to CLOB; this is what the Polymarket UI calls "balance".
         try:
             # If we have on-chain USDC but collateral is still empty, try to trigger a refresh.
-            if (not STATE.dry_run) and float(STATE.wallet_usdc or 0.0) > 0 and float(STATE.poly_collateral_usdc or 0.0) <= 0:
+            if (not STATE.dry_run) and float(getattr(STATE, "trading_wallet_usdc", 0.0) or 0.0) > 0 and float(STATE.poly_collateral_usdc or 0.0) <= 0:
                 try:
                     clob.refresh_collateral_and_allowance()
                 except Exception:
@@ -629,16 +643,21 @@ async def wallet_poll_loop(clob: ClobClient) -> None:
         except Exception as exc:
             STATE.poly_last_sync_error = str(exc)[:200]
 
-        if usdc is not None or matic is not None:
+        if (usdc is not None or matic is not None) or (t_usdc is not None or t_matic is not None):
             log.debug(
-                "Wallet: USDC=%.2f (native=%.2f usdc.e=%.2f) collateral=%.2f MATIC=%.4f",
+                "Wallet: funding_usdc=%.2f (native=%.2f usdc.e=%.2f) trading_usdc=%.2f (native=%.2f usdc.e=%.2f) collateral=%.2f funding_matic=%.4f trading_matic=%.4f",
                 float(STATE.wallet_usdc or 0.0),
                 float(getattr(STATE, "wallet_usdc_native", 0.0) or 0.0),
                 float(getattr(STATE, "wallet_usdc_e", 0.0) or 0.0),
+                float(getattr(STATE, "trading_wallet_usdc", 0.0) or 0.0),
+                float(getattr(STATE, "trading_wallet_usdc_native", 0.0) or 0.0),
+                float(getattr(STATE, "trading_wallet_usdc_e", 0.0) or 0.0),
                 float(getattr(STATE, "poly_collateral_usdc", 0.0) or 0.0),
                 float(STATE.wallet_matic or 0.0),
+                float(getattr(STATE, "trading_wallet_matic", 0.0) or 0.0),
             )
-        await asyncio.sleep(60)
+        poll_s = _get_float_env("POLY_WALLET_POLL_SEC", 60.0)
+        await asyncio.sleep(max(10.0, float(poll_s)))
 
 
 async def evolve_agents_loop() -> None:
