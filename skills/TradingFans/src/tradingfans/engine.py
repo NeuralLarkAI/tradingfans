@@ -311,6 +311,7 @@ async def _evaluate_market(
         book=book,
         implied_yes=implied_yes,
         max_time_to_expiry=STATE.max_time_to_expiry,
+        allow_wide_book_live=(not STATE.dry_run and bool(getattr(STATE, "live_wide_book_enabled", False))),
     )
     if not rc.ok:
         log.info("RISK FAIL | %s | %s", market.question[:40], " | ".join(rc.reasons))
@@ -424,17 +425,26 @@ async def _evaluate_market(
                 return None
 
     # Execution price:
+    wide_live = (not STATE.dry_run) and bool(getattr(STATE, "live_wide_book_enabled", False))
+    live_pad = _get_float_env("POLY_LIVE_PRICE_PAD", 0.02)
+    live_max_price = _get_float_env("POLY_LIVE_MAX_PRICE", 0.80)
     # - DRY RUN: simulate fills at the implied mid (AMM-like) to avoid pathological CLOB spreads
     #            in 5m markets (often best_bid≈0.01 / best_ask≈0.99).
     # - LIVE:    use best_ask on the relevant token (and rely on risk spread/depth checks).
     if decision.signal == "BUY_YES":
         token_id = market.yes_token_id
-        price = float(implied_yes) if STATE.dry_run else float(book.best_ask if book.best_ask else implied_yes)
+        price = (
+            float(implied_yes)
+            if STATE.dry_run
+            else (min(float(implied_yes) + live_pad, live_max_price) if wide_live else float(book.best_ask if book.best_ask else implied_yes))
+        )
     else:
         token_id = market.no_token_id
         implied_no = 1.0 - implied_yes
         if STATE.dry_run:
             price = float(implied_no)
+        elif wide_live:
+            price = min(float(implied_no) + live_pad, live_max_price)
         else:
             book_no = await loop.run_in_executor(None, clob.get_book, token_id)
             price = float(book_no.best_ask if (book_no and book_no.best_ask) else implied_no)

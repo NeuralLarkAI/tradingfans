@@ -58,6 +58,8 @@ class AgentState:
         self.dry_run: bool = True
         self.paused: bool = False
         self.stop_requested: bool = False
+        # Live execution mode: allow trading even when 5m books are wide/empty.
+        self.live_wide_book_enabled: bool = False
         self.max_size: float = 50.0
         self.symbol_filter: str = "ALL"
         self.poll_interval: float = 5.0
@@ -214,6 +216,8 @@ class AgentState:
             "poll_interval": self.poll_interval,
             "min_edge": self.min_edge,
             "paused": self.paused,
+            "stop_requested": self.stop_requested,
+            "live_wide_book_enabled": bool(getattr(self, "live_wide_book_enabled", False)),
             "min_order_size": self.min_order_size,
             "edge_full_scale": self.edge_full_scale,
             "max_time_to_expiry": self.max_time_to_expiry,

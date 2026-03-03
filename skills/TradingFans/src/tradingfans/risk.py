@@ -62,6 +62,7 @@ def evaluate(
     implied_yes: float,
     *,
     max_time_to_expiry: float = MAX_TIME_TO_EXPIRY,
+    allow_wide_book_live: bool = False,
 ) -> RiskCheck:
     """
     Run all guardrails and return a RiskCheck.
@@ -89,8 +90,10 @@ def evaluate(
     if not spot_fresh:
         rc.fail("Spot price stale")
 
-    # 3–5. Order book checks — skipped in dry run (no real fills)
-    if not dry_run:
+    # 3–5. Order book checks
+    # - Always skipped in dry run.
+    # - In LIVE, they can be explicitly bypassed for 5m "wide book" markets (opt-in).
+    if not dry_run and not allow_wide_book_live:
         if book is None:
             rc.fail("Order book unavailable")
         else:

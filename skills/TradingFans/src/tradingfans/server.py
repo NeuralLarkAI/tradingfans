@@ -133,6 +133,8 @@ body::before {
 .mode-toggle input { accent-color: var(--green); }
 .mode-toggle .mt-live { color: var(--green); }
 .mode-toggle .mt-dry { color: var(--red-hi); }
+.mode-toggle.wide { padding: 0 10px; }
+.mode-toggle.wide .mt-wide { color: var(--orange); }
 .badge { padding: 3px 9px; border-radius: 2px; font-size: 9px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
 .badge-dry  { background: var(--red-dim); color: var(--red-hi); border: 1px solid #6a0015; }
 .badge-live { background: #001a00; color: var(--green); border: 1px solid #00803a; box-shadow: 0 0 8px rgba(0,230,118,0.15); }
@@ -426,6 +428,10 @@ body::before {
       <span class="mt-dry">DRY</span>
       <input id="mode-toggle" type="checkbox" onchange="toggleMode()">
       <span class="mt-live">LIVE</span>
+    </label>
+    <label class="mode-toggle wide" title="LIVE wide-book mode: bypass spread/depth checks and place mid+pad limit orders (risky)">
+      <span class="mt-wide">WIDE</span>
+      <input id="wide-toggle" type="checkbox" onchange="toggleWide()">
     </label>
     <button class="ctl-btn pause" id="btn-pause" onclick="togglePause()">PAUSE</button>
     <button class="ctl-btn stop" onclick="hardStop()">STOP</button>
@@ -725,6 +731,7 @@ let prevBtc = null, prevEth = null, lastLog = 0, fails = 0;
 let walletAddr = '';
 let currentTab = 'dry';
 let paused = false;
+let wideLive = false;
 
 const fmt  = (n, d=2) => Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const fmtD = (n, d=2) => (n >= 0 ? '+' : '') + '$' + fmt(Math.abs(n), d);
@@ -1241,6 +1248,9 @@ async function poll() {
     if (pbtn) pbtn.textContent = paused ? 'RESUME' : 'PAUSE';
     const mt = $('mode-toggle');
     if (mt) mt.checked = !d.dry_run;
+    wideLive = !!d.live_wide_book_enabled;
+    const wt = $('wide-toggle');
+    if (wt) wt.checked = wideLive;
 
     // Tab live button label
     $('tbtn-live').querySelector('.tb-dot').style.background = d.dry_run ? '' : 'var(--green)';
@@ -1311,6 +1321,14 @@ async function toggleMode() {
     const mt = $('mode-toggle');
     const live = !!(mt && mt.checked);
     await postControl('set_mode', {mode: live ? 'live' : 'dry'});
+  } catch {}
+}
+
+async function toggleWide() {
+  try {
+    const wt = $('wide-toggle');
+    const en = !!(wt && wt.checked);
+    await postControl('set_wide_book', {enabled: en});
   } catch {}
 }
 
@@ -1443,6 +1461,11 @@ async def handle_control(request: web.Request) -> web.Response:
             os.environ["POLY_DRY_RUN"] = "0"
             return web.json_response({"ok": True, "dry_run": False})
         return web.json_response({"ok": False, "error": "bad_mode"}, status=400)
+
+    if action in ("set_wide_book", "wide_book"):
+        enabled = bool(body.get("enabled"))
+        STATE.live_wide_book_enabled = bool(enabled)
+        return web.json_response({"ok": True, "live_wide_book_enabled": STATE.live_wide_book_enabled})
 
     return web.json_response({"ok": False, "error": "unknown_action"}, status=400)
 
