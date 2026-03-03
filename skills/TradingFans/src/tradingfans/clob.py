@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 from py_clob_client.client import ClobClient as _ClobClient
 from py_clob_client.clob_types import OrderArgs
-from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, ApiCreds
 from py_clob_client.constants import POLYGON
 
 # In py-clob-client >= 0.20, Side is a plain string constant
@@ -102,7 +102,15 @@ def _make_clob_client() -> tuple[_ClobClient, str, str]:
         chain_id=chain_id,
         funder=funder,
     )
-    client.set_api_creds(client.create_or_derive_api_creds())
+
+    api_key = os.environ.get("POLY_API_KEY", "").strip()
+    api_secret = os.environ.get("POLY_API_SECRET", "").strip()
+    api_passphrase = os.environ.get("POLY_API_PASSPHRASE", "").strip()
+    if api_key and api_secret and api_passphrase:
+        client.set_api_creds(ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase))
+        log.info("ClobClient: using API creds from POLY_API_KEY/POLY_API_SECRET/POLY_API_PASSPHRASE.")
+    else:
+        client.set_api_creds(client.create_or_derive_api_creds())
     return client, derived_addr, funder
 
 
