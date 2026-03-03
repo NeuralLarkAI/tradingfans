@@ -83,6 +83,9 @@ class AgentState:
         self.dry_deployed: float = 0.0   # running total USDC committed in dry-run
         self.dry_realized_pnl: float = 0.0
 
+        # Live exposure tracking (best-effort, in-process)
+        self.live_deployed: float = 0.0
+
         # Mainnet wallet
         self.wallet_address: str = ""
         self.wallet_usdc: float | None = None
@@ -263,6 +266,7 @@ class AgentState:
                 "address": self.wallet_address,
                 "usdc":    round(self.wallet_usdc, 2)  if self.wallet_usdc  is not None else None,
                 "matic":   round(self.wallet_matic, 4) if self.wallet_matic is not None else None,
+                "live_deployed_usdc": round(float(getattr(self, "live_deployed", 0.0)), 2),
             },
             # ── Autotuner ───────────────────────────────────────────────
             "tuner": {
@@ -291,6 +295,23 @@ class AgentState:
                         "question": str(t.get("question", ""))[:120],
                     }
                     for t in list(self.open_trades.values())
+                    if str(t.get("mode") or "DRY").upper() == "DRY"
+                ],
+                "open_trades_live": [
+                    {
+                        "market_id": t.get("market_id", "")[:16],
+                        "agent_id": str(t.get("agent_id") or ""),
+                        "symbol": t.get("symbol"),
+                        "side": t.get("side"),
+                        "size_usdc": round(float(t.get("size_usdc", 0.0)), 2),
+                        "price_paid": round(float(t.get("price_paid", 0.0)) * 100, 1),
+                        "entry_epoch": float(t.get("entry_epoch", 0.0)),
+                        "end_epoch": float(t.get("end_epoch", 0.0)),
+                        "tte_sec": round(max(0.0, float(t.get("end_epoch", 0.0)) - time.time()), 1),
+                        "question": str(t.get("question", ""))[:120],
+                    }
+                    for t in list(self.open_trades.values())
+                    if str(t.get("mode") or "DRY").upper() != "DRY"
                 ],
                 "resolved_trades": list(self.resolved_trades)[:500],
             },

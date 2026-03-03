@@ -28,6 +28,7 @@ class OpenTrade:
     entry_epoch: float
     end_epoch: float
     agent_id: str = ""
+    mode: str = "DRY"  # "DRY" | "LIVE"
 
 
 def record_open_trade(t: OpenTrade) -> None:
@@ -41,6 +42,7 @@ def record_open_trade(t: OpenTrade) -> None:
         "entry_epoch": float(t.entry_epoch),
         "end_epoch": float(t.end_epoch),
         "agent_id": str(getattr(t, "agent_id", "")),
+        "mode": str(getattr(t, "mode", "DRY")),
     }
 
 
@@ -105,8 +107,11 @@ def resolve_due_trades(spot: SpotFeed) -> None:
                 STATE.open_trades[mid] = t
                 continue
 
-            if STATE.dry_run:
+            mode = str(t.get("mode") or ("DRY" if STATE.dry_run else "LIVE")).upper()
+            if mode == "DRY":
                 STATE.dry_deployed = max(0.0, STATE.dry_deployed - float(t["size_usdc"]))
+            else:
+                STATE.live_deployed = max(0.0, STATE.live_deployed - float(t["size_usdc"]))
 
             aid = str(t.get("agent_id") or "")
             if aid:
@@ -126,6 +131,7 @@ def resolve_due_trades(spot: SpotFeed) -> None:
                 "question": t["question"][:120],
                 "note": "unresolved_missing_spot_history",
                 "agent_id": aid,
+                "mode": mode,
             })
             continue
 
@@ -138,9 +144,13 @@ def resolve_due_trades(spot: SpotFeed) -> None:
         )
 
         # Release deployed capital and book realized PnL (dry-run only).
-        if STATE.dry_run:
+        mode = str(t.get("mode") or ("DRY" if STATE.dry_run else "LIVE")).upper()
+        if mode == "DRY":
             STATE.dry_deployed = max(0.0, STATE.dry_deployed - float(t["size_usdc"]))
             STATE.dry_realized_pnl += pnl
+        else:
+            # We do NOT book realized pnl in live mode here (this is a spot-proxy resolver).
+            STATE.live_deployed = max(0.0, STATE.live_deployed - float(t["size_usdc"]))
 
         # Attribute performance to agent (if set).
         aid = str(t.get("agent_id") or "")
@@ -161,4 +171,5 @@ def resolve_due_trades(spot: SpotFeed) -> None:
             "pnl_usdc": round(pnl, 2),
             "question": t["question"][:120],
             "agent_id": aid,
+            "mode": mode,
         })

@@ -595,6 +595,10 @@ body::before {
             <div class="wbal-val usdc-val" id="mn-usdc">—</div>
           </div>
           <div class="wbal">
+            <div class="wbal-lbl">Deployed (session)</div>
+            <div class="wbal-val" id="mn-dep">—</div>
+          </div>
+          <div class="wbal">
             <div class="wbal-lbl">MATIC (gas)</div>
             <div class="wbal-val matic-val" id="mn-matic">—</div>
           </div>
@@ -979,6 +983,7 @@ function renderWallet(wallet, dryRun) {
   } else {
     $('mn-usdc').textContent = 'Fetching...';
   }
+  $('mn-dep').textContent = '$' + fmt(Number(wallet.live_deployed_usdc ?? 0));
   if (wallet.matic !== null && wallet.matic !== undefined) {
     $('mn-matic').textContent = fmt(wallet.matic, 4);
   } else {

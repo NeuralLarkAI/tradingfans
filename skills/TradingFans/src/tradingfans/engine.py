@@ -172,6 +172,13 @@ def _size_usdc(edge: float, max_size: float, *, edge_full_scale: float | None = 
     return round(max(fraction * max_size, 0.0), 2)
 
 
+def _get_float_env(key: str, default: float) -> float:
+    try:
+        return float(os.environ.get(key, str(default)))
+    except Exception:
+        return float(default)
+
+
 def _utc_now_iso() -> str:
     return datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 
@@ -393,6 +400,28 @@ async def _evaluate_market(
         )
         return None
 
+    # Live-mode wallet-based caps to prevent spending the whole wallet quickly.
+    # These are soft constraints on top of per-agent max_size_usdc.
+    if not STATE.dry_run:
+        wallet_usdc = STATE.wallet_usdc
+        reserve = _get_float_env("POLY_LIVE_WALLET_RESERVE_USDC", 20.0)
+        trade_frac = _get_float_env("POLY_LIVE_TRADE_FRACTION", 0.05)      # max % of spendable per trade
+        total_frac = _get_float_env("POLY_LIVE_TOTAL_FRACTION", 0.25)      # max % of spendable across open exposure
+        if wallet_usdc is not None:
+            spendable = max(0.0, float(wallet_usdc) - float(reserve))
+            max_trade = max(0.0, spendable * max(0.0, min(1.0, trade_frac)))
+            max_total = max(0.0, spendable * max(0.0, min(1.0, total_frac)))
+            if spendable <= 0.0:
+                log.info("RISK FAIL | %s | wallet_spendable<=0", market.question[:40])
+                return None
+            size = min(size, max_trade if max_trade > 0 else size, spendable)
+            if size < float(agent.min_order_size_usdc):
+                log.info("RISK FAIL | %s | wallet_cap<size", market.question[:40])
+                return None
+            if (float(getattr(STATE, "live_deployed", 0.0)) + size) > (max_total + 1e-6):
+                log.info("RISK FAIL | %s | live_exposure_cap", market.question[:40])
+                return None
+
     # Execution price:
     # - DRY RUN: simulate fills at the implied mid (AMM-like) to avoid pathological CLOB spreads
     #            in 5m markets (often best_bid≈0.01 / best_ask≈0.99).
@@ -432,25 +461,32 @@ async def _evaluate_market(
     if order_id:
         _open_positions.add(market.market_id)
         STATE.trade_count += 1
+        try:
+            perf = STATE.agent_perf.setdefault(agent.agent_id, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
+            perf["trades"] = int(perf.get("trades", 0)) + 1
+        except Exception:
+            pass
+
         if STATE.dry_run:
             STATE.dry_deployed += size   # track virtual capital committed
-            try:
-                perf = STATE.agent_perf.setdefault(agent.agent_id, {"trades": 0, "resolved": 0, "realized_pnl": 0.0})
-                perf["trades"] = int(perf.get("trades", 0)) + 1
-            except Exception:
-                pass
-            # Track trade for later resolution / realized PnL
-            record_open_trade(OpenTrade(
-                market_id=market.market_id,
-                question=market.question,
-                symbol=symbol,
-                side=decision.signal,
-                size_usdc=size,
-                price_paid=price,
-                entry_epoch=time.time(),
-                end_epoch=market.end_time.timestamp(),
-                agent_id=agent.agent_id,
-            ))
+            mode = "DRY"
+        else:
+            STATE.live_deployed = float(getattr(STATE, "live_deployed", 0.0)) + float(size)
+            mode = "LIVE"
+
+        # Track trade for later expiry release / (dry-run) realized PnL.
+        record_open_trade(OpenTrade(
+            market_id=market.market_id,
+            question=market.question,
+            symbol=symbol,
+            side=decision.signal,
+            size_usdc=size,
+            price_paid=price,
+            entry_epoch=time.time(),
+            end_epoch=market.end_time.timestamp(),
+            agent_id=agent.agent_id,
+            mode=mode,
+        ))
         # Update the last signal record with the real order_id
         if STATE.recent_signals:
             sr = STATE.recent_signals[0]
