@@ -930,6 +930,14 @@ async def main() -> None:
         except (NotImplementedError, OSError):
             signal.signal(sig, lambda s, f: stop_event.set())
 
+    async def _watch_stop_flag() -> None:
+        while not stop_event.is_set():
+            if getattr(STATE, "stop_requested", False):
+                log.info("STOP requested via dashboard — shutting down...")
+                stop_event.set()
+                return
+            await asyncio.sleep(0.25)
+
     # Start subsystems
     ui_runner = await start_server()
     await spot.start()
@@ -958,11 +966,15 @@ async def main() -> None:
         evolve_agents_loop(),
         name="agent-evolve",
     )
+    stop_watch_task = asyncio.create_task(
+        _watch_stop_flag(),
+        name="stop-watch",
+    )
 
     await stop_event.wait()
     log.info("Shutting down...")
 
-    for task in (trade_task, wallet_task, tuner_task, remote_task, evolve_task):
+    for task in (trade_task, wallet_task, tuner_task, remote_task, evolve_task, stop_watch_task):
         task.cancel()
         try:
             await task

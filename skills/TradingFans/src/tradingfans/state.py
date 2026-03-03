@@ -57,6 +57,7 @@ class AgentState:
         self.started_at: float = time.time()
         self.dry_run: bool = True
         self.paused: bool = False
+        self.stop_requested: bool = False
         self.max_size: float = 50.0
         self.symbol_filter: str = "ALL"
         self.poll_interval: float = 5.0

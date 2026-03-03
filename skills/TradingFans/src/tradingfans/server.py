@@ -108,6 +108,31 @@ body::before {
 #hdr-mid .kv { display: flex; gap: 5px; }
 #hdr-mid .kv b { color: var(--white2); font-weight: 500; }
 #hdr-right { display: flex; align-items: center; gap: 14px; }
+.ctl-btn {
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--white2);
+  height: 24px;
+  padding: 0 10px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.ctl-btn:hover { border-color: var(--red-dim); color: var(--white); }
+.ctl-btn.stop:hover { border-color: var(--red); color: var(--red-hi); }
+.ctl-btn.pause:hover { border-color: var(--orange); color: var(--orange); }
+.mode-toggle {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 0 8px; height: 24px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--white2);
+  font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+}
+.mode-toggle input { accent-color: var(--green); }
+.mode-toggle .mt-live { color: var(--green); }
+.mode-toggle .mt-dry { color: var(--red-hi); }
 .badge { padding: 3px 9px; border-radius: 2px; font-size: 9px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
 .badge-dry  { background: var(--red-dim); color: var(--red-hi); border: 1px solid #6a0015; }
 .badge-live { background: #001a00; color: var(--green); border: 1px solid #00803a; box-shadow: 0 0 8px rgba(0,230,118,0.15); }
@@ -397,6 +422,13 @@ body::before {
   </div>
   <div id="hdr-right">
     <span id="mode-badge" class="badge badge-dry">DRY RUN</span>
+    <label class="mode-toggle" title="Toggle DRY vs LIVE (mainnet)">
+      <span class="mt-dry">DRY</span>
+      <input id="mode-toggle" type="checkbox" onchange="toggleMode()">
+      <span class="mt-live">LIVE</span>
+    </label>
+    <button class="ctl-btn pause" id="btn-pause" onclick="togglePause()">PAUSE</button>
+    <button class="ctl-btn stop" onclick="hardStop()">STOP</button>
     <span id="uptime">00:00:00</span>
     <div id="conn"><div id="cdot" class="cdot-err"></div><span id="ctxt">connecting</span></div>
   </div>
@@ -692,6 +724,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
 let prevBtc = null, prevEth = null, lastLog = 0, fails = 0;
 let walletAddr = '';
 let currentTab = 'dry';
+let paused = false;
 
 const fmt  = (n, d=2) => Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const fmtD = (n, d=2) => (n >= 0 ? '+' : '') + '$' + fmt(Math.abs(n), d);
@@ -1202,6 +1235,13 @@ async function poll() {
     b.className   = d.dry_run ? 'badge badge-dry' : 'badge badge-live';
     b.textContent = d.dry_run ? 'DRY RUN' : '● LIVE';
 
+    // Controls state
+    paused = !!d.paused;
+    const pbtn = $('btn-pause');
+    if (pbtn) pbtn.textContent = paused ? 'RESUME' : 'PAUSE';
+    const mt = $('mode-toggle');
+    if (mt) mt.checked = !d.dry_run;
+
     // Tab live button label
     $('tbtn-live').querySelector('.tb-dot').style.background = d.dry_run ? '' : 'var(--green)';
 
@@ -1251,6 +1291,34 @@ async function poll() {
       lastLog = d.log_lines.length;
     }
   } catch { if (++fails > 2) setConn(false); }
+}
+
+async function postControl(action, extra) {
+  const payload = Object.assign({action}, extra || {});
+  const r = await fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return await r.json();
+}
+
+async function togglePause() {
+  try {
+    await postControl(paused ? 'resume' : 'pause');
+  } catch {}
+}
+
+async function toggleMode() {
+  try {
+    const mt = $('mode-toggle');
+    const live = !!(mt && mt.checked);
+    await postControl('set_mode', {mode: live ? 'live' : 'dry'});
+  } catch {}
+}
+
+async function hardStop() {
+  try {
+    if (!confirm('Hard stop the engine? This will shut down the bot process.')) return;
+    await postControl('stop');
+  } catch {}
 }
 
 // ── SSE ────────────────────────────────────────────────────────
@@ -1344,6 +1412,41 @@ async def handle_agents(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "multi_agent": STATE.to_dict().get("multi_agent")})
 
 
+async def handle_control(request: web.Request) -> web.Response:
+    """Local-only controls for pause/resume, mode switch, and hard-stop."""
+    if not _local_only(request):
+        return web.json_response({"ok": False, "error": "forbidden"}, status=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    action = str(body.get("action") or "").strip().lower()
+    if action == "pause":
+        STATE.paused = True
+        return web.json_response({"ok": True, "paused": True, "dry_run": STATE.dry_run})
+    if action in ("resume", "unpause"):
+        STATE.paused = False
+        return web.json_response({"ok": True, "paused": False, "dry_run": STATE.dry_run})
+    if action in ("stop", "shutdown"):
+        STATE.stop_requested = True
+        return web.json_response({"ok": True, "stopping": True})
+    if action in ("set_mode", "mode"):
+        mode = str(body.get("mode") or "").strip().lower()
+        if mode in ("dry", "dryrun", "dry-run"):
+            STATE.dry_run = True
+            os.environ["POLY_DRY_RUN"] = "1"
+            return web.json_response({"ok": True, "dry_run": True})
+        if mode in ("live", "mainnet"):
+            STATE.dry_run = False
+            os.environ["POLY_DRY_RUN"] = "0"
+            return web.json_response({"ok": True, "dry_run": False})
+        return web.json_response({"ok": False, "error": "bad_mode"}, status=400)
+
+    return web.json_response({"ok": False, "error": "unknown_action"}, status=400)
+
+
 async def handle_stream(request: web.Request) -> web.StreamResponse:
     """SSE endpoint — streams new log lines as they arrive."""
     response = web.StreamResponse()
@@ -1375,6 +1478,7 @@ async def start_server() -> web.AppRunner:
     app.router.add_get("/api/state", handle_state)
     app.router.add_get("/api/stream", handle_stream)
     app.router.add_post("/api/agents", handle_agents)
+    app.router.add_post("/api/control", handle_control)
 
     runner = web.AppRunner(app)
     await runner.setup()
