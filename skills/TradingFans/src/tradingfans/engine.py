@@ -511,7 +511,13 @@ async def _fetch_wallet_balance() -> tuple[float | None, float | None]:
     if not address:
         return None, None
 
-    POLYGON_RPC = "https://polygon-rpc.com"
+    # Public RPCs can be flaky or rate-limited. Try a small fallback list.
+    rpc_env = os.environ.get("POLY_POLYGON_RPC", "").strip()
+    RPCS = [rpc_env] if rpc_env else []
+    RPCS += [
+        "https://polygon-bor.publicnode.com",
+        "https://polygon-rpc.com",
+    ]
     # Polygon has both bridged USDC.e and native USDC (Circle). Users may deposit either.
     USDC_E_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"       # USDC.e (bridged)
     USDC_NATIVE_CONTRACT = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"  # USDC (native)
@@ -520,33 +526,48 @@ async def _fetch_wallet_balance() -> tuple[float | None, float | None]:
         addr_raw = (address[2:] if address.startswith("0x") else address).lower()
         calldata = "0x70a08231" + addr_raw.zfill(64)   # balanceOf(address)
 
-        async with _aiohttp.ClientSession() as sess:
-            async def _erc20_balance(contract: str, req_id: int) -> float:
-                r = await sess.post(POLYGON_RPC, json={
-                    "jsonrpc": "2.0", "method": "eth_call",
+        timeout = _aiohttp.ClientTimeout(total=8)
+        async with _aiohttp.ClientSession(timeout=timeout) as sess:
+            async def _post(rpc: str, payload: dict) -> dict:
+                async with sess.post(rpc, json=payload) as r:
+                    return await r.json()
+
+            async def _erc20_balance(rpc: str, contract: str, req_id: int) -> float:
+                j = await _post(rpc, {
+                    "jsonrpc": "2.0",
+                    "method": "eth_call",
                     "params": [{"to": contract, "data": calldata}, "latest"],
                     "id": req_id,
-                }, timeout=_aiohttp.ClientTimeout(total=8))
-                hex_u = (await r.json()).get("result", "0x0")
+                })
+                hex_u = j.get("result", "0x0") if isinstance(j, dict) else "0x0"
                 return int(hex_u, 16) / 1_000_000  # 6 decimals
 
-            # USDC balances (two contracts)
-            usdc_e = await _erc20_balance(USDC_E_CONTRACT, 1)
-            usdc_native = await _erc20_balance(USDC_NATIVE_CONTRACT, 2)
-            usdc_total = float(usdc_e) + float(usdc_native)
-            STATE.wallet_usdc_e = float(usdc_e)
-            STATE.wallet_usdc_native = float(usdc_native)
+            async def _matic_balance(rpc: str) -> float:
+                j = await _post(rpc, {
+                    "jsonrpc": "2.0",
+                    "method": "eth_getBalance",
+                    "params": [address, "latest"],
+                    "id": 10,
+                })
+                hex_m = j.get("result", "0x0") if isinstance(j, dict) else "0x0"
+                return int(hex_m, 16) / 1e18
 
-            # MATIC balance
-            r2 = await sess.post(POLYGON_RPC, json={
-                "jsonrpc": "2.0", "method": "eth_getBalance",
-                "params": [address, "latest"],
-                "id": 3,
-            }, timeout=_aiohttp.ClientTimeout(total=8))
-            hex_m = (await r2.json()).get("result", "0x0")
-            matic = int(hex_m, 16) / 1e18
-
-        return usdc_total, matic
+            last_exc: Exception | None = None
+            for rpc in [r for r in RPCS if r]:
+                try:
+                    usdc_e = await _erc20_balance(rpc, USDC_E_CONTRACT, 1)
+                    usdc_native = await _erc20_balance(rpc, USDC_NATIVE_CONTRACT, 2)
+                    matic = await _matic_balance(rpc)
+                    usdc_total = float(usdc_e) + float(usdc_native)
+                    STATE.wallet_usdc_e = float(usdc_e)
+                    STATE.wallet_usdc_native = float(usdc_native)
+                    return usdc_total, matic
+                except Exception as exc:
+                    last_exc = exc
+                    continue
+            if last_exc:
+                raise last_exc
+            return None, None
     except Exception as exc:
         log.debug("Wallet fetch failed: %s", exc)
         return None, None
