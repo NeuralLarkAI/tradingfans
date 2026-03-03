@@ -511,32 +511,41 @@ async def _fetch_wallet_balance() -> tuple[float | None, float | None]:
         return None, None
 
     POLYGON_RPC = "https://polygon-rpc.com"
-    USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e on Polygon
+    # Polygon has both bridged USDC.e and native USDC (Circle). Users may deposit either.
+    USDC_E_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"       # USDC.e (bridged)
+    USDC_NATIVE_CONTRACT = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"  # USDC (native)
 
     try:
         addr_raw = (address[2:] if address.startswith("0x") else address).lower()
         calldata = "0x70a08231" + addr_raw.zfill(64)   # balanceOf(address)
 
         async with _aiohttp.ClientSession() as sess:
-            # USDC balance
-            r1 = await sess.post(POLYGON_RPC, json={
-                "jsonrpc": "2.0", "method": "eth_call",
-                "params": [{"to": USDC_CONTRACT, "data": calldata}, "latest"],
-                "id": 1,
-            }, timeout=_aiohttp.ClientTimeout(total=8))
-            hex_u = (await r1.json()).get("result", "0x0")
-            usdc = int(hex_u, 16) / 1_000_000   # 6 decimals
+            async def _erc20_balance(contract: str, req_id: int) -> float:
+                r = await sess.post(POLYGON_RPC, json={
+                    "jsonrpc": "2.0", "method": "eth_call",
+                    "params": [{"to": contract, "data": calldata}, "latest"],
+                    "id": req_id,
+                }, timeout=_aiohttp.ClientTimeout(total=8))
+                hex_u = (await r.json()).get("result", "0x0")
+                return int(hex_u, 16) / 1_000_000  # 6 decimals
+
+            # USDC balances (two contracts)
+            usdc_e = await _erc20_balance(USDC_E_CONTRACT, 1)
+            usdc_native = await _erc20_balance(USDC_NATIVE_CONTRACT, 2)
+            usdc_total = float(usdc_e) + float(usdc_native)
+            STATE.wallet_usdc_e = float(usdc_e)
+            STATE.wallet_usdc_native = float(usdc_native)
 
             # MATIC balance
             r2 = await sess.post(POLYGON_RPC, json={
                 "jsonrpc": "2.0", "method": "eth_getBalance",
                 "params": [address, "latest"],
-                "id": 2,
+                "id": 3,
             }, timeout=_aiohttp.ClientTimeout(total=8))
             hex_m = (await r2.json()).get("result", "0x0")
             matic = int(hex_m, 16) / 1e18
 
-        return usdc, matic
+        return usdc_total, matic
     except Exception as exc:
         log.debug("Wallet fetch failed: %s", exc)
         return None, None
@@ -548,8 +557,16 @@ async def wallet_poll_loop() -> None:
         usdc, matic = await _fetch_wallet_balance()
         if usdc is not None:
             STATE.wallet_usdc = usdc
+        if matic is not None:
             STATE.wallet_matic = matic
-            log.debug("Wallet: USDC=%.2f MATIC=%.4f", usdc, matic)
+        if usdc is not None or matic is not None:
+            log.debug(
+                "Wallet: USDC=%.2f (native=%.2f usdc.e=%.2f) MATIC=%.4f",
+                float(STATE.wallet_usdc or 0.0),
+                float(getattr(STATE, "wallet_usdc_native", 0.0) or 0.0),
+                float(getattr(STATE, "wallet_usdc_e", 0.0) or 0.0),
+                float(STATE.wallet_matic or 0.0),
+            )
         await asyncio.sleep(60)
 
 

@@ -984,6 +984,13 @@ function renderWallet(wallet, dryRun) {
     $('mn-usdc').textContent = 'Fetching...';
   }
   $('mn-dep').textContent = '$' + fmt(Number(wallet.live_deployed_usdc ?? 0));
+  // Optional breakdown (native vs bridged)
+  const uN = wallet.usdc_native, uE = wallet.usdc_e;
+  const sub = (uN !== null && uN !== undefined) || (uE !== null && uE !== undefined)
+    ? ` (native $${fmt(Number(uN||0))} · usdc.e $${fmt(Number(uE||0))})`
+    : '';
+  const usdcLbl = document.querySelector('#wallet-card .wbal-lbl');
+  if (usdcLbl) usdcLbl.textContent = 'USDC Balance' + sub;
   if (wallet.matic !== null && wallet.matic !== undefined) {
     $('mn-matic').textContent = fmt(wallet.matic, 4);
   } else {
